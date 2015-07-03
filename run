@@ -1,0 +1,1132 @@
+#!/opt/bin/perl
+
+# this file is licensed under the General Public License (GPL) version 3
+
+sub STRACE (){ 0 }
+sub PRCPU  (){ 0 }
+sub PRIPS  (){ 0 }
+
+use common::sense;
+no utf8; # activestate perl
+use Time::HiRes;
+use POSIX ();
+use Cwd ();
+use Fcntl ();
+use List::Util ();
+
+pack "Q", 5; # make sure it's a 64 bit perl
+
+#############################################################################
+# system state
+
+use integer; # minor speed improvement, major correctness improvement for div/divu
+
+sub ADDR_SHIFT(){         16 }
+sub ADDR_MASK (){     0x3fff }
+
+sub STACK     (){ 0xf00f0000 }
+sub MINBRK    (){ 0x10000000 }
+
+sub M32       (){ 0xffffffff }
+sub B31       (){ 0x80000000 }
+sub M16       (){     0xffff }
+sub B15       (){     0x8000 }
+sub M8        (){       0xff }
+sub B7        (){       0x80 }
+
+my @mem; # [16bits][14bits] = 32bits
+
+sub xxd($) {
+   open my $fh, "| xxd" or die;
+   print $fh $_[0];
+}
+
+sub memset($$) {
+   for (0 .. (length $_[1]) - 1) {
+      my $i = $_[0] + $_;
+      my $c = unpack "C", substr $_[1], $_, 1;
+
+      my $s = (~$i & 3) << 3;
+      $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+      $$i = $$i & ~(0xff << $s) | ($c << $s);
+   }
+}
+
+sub memget($$) {
+   my $r;
+
+   for my $i ($_[0] .. $_[0] + $_[1] - 1) {
+      my $s = (~$i & 3) << 3;
+      $r .= pack "C", (($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & 0xff);
+   }
+
+   $r
+}
+
+sub memstr($) {
+   my $r;
+
+   for (my $i = $_[0]; ; ++$i) {
+      my $s = (~$i & 3) << 3;
+      $r .= pack "C", (($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & 0xff)
+                      || last;
+   }
+
+   $r
+}
+
+sub mem_reset() {
+   @mem = ();
+}
+
+############################################
+
+my ($pc, $hi, $lo, $delay); # cpu state
+
+my (
+   $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7 ,
+   $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15,
+   $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23,
+   $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31,
+);
+
+my $insn;
+
+my %insn2src; # insn to perl source
+my %insn2sub; # insn to compiled perl sub
+my %sub2insn; # sub+0 to insn code
+
+{
+   our ($hint_bits, $warning_bits, %hint_hash);
+
+   BEGIN {
+     ($hint_bits, $warning_bits, %hint_hash) = ($^H, ${^WARNING_BITS}, %^H);
+   }
+
+   sub deparse {
+      require B::Deparse;
+      my $deparser = new B::Deparse;
+      $deparser->ambient_pragmas (
+         hint_bits    => $hint_bits,
+         warning_bits => $warning_bits,
+         '$['         => $[+0,
+         integer      => 1,
+         '%^H'        => \%hint_hash,
+      );
+      $deparser->coderef2text ($_[0])
+   }
+}
+
+sub cpu_pr {
+   printf " 0 %8x=zr %8x=at %8x=v0 %8x=v1 %8x=a0 %8x=a1 %8x=a2 %8x=a3\n", $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7;
+   printf " 8 %8x=t0 %8x=t1 %8x=t2 %8x=t3 %8x=t4 %8x=t5 %8x=t6 %8x=t7\n", $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15;
+   printf "16 %8x=s0 %8x=s1 %8x=s2 %8x=s3 %8x=s4 %8x=s4 %8x=s6 %8x=s6\n", $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23;
+   printf "24 %8x=t8 %8x=t9 %8x=k0 %8x=k1 %8x=gp %8x=sp %8x=fp %8x=ra\n", $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31;
+
+   my $code = $sub2insn{$insn+0};
+   my $src  = $insn2src{$code} ||= deparse $insn;
+   $src =~ s/\s+/ /g;
+   printf "%x: %08x (%s)\n", $pc * 4, $code, $src;
+}
+
+############################################
+# syscalls
+
+# mips abi
+sub ENOENT (){  2 }
+sub EBADF  (){  9 }
+sub ENOMEM (){ 12 }
+sub ENOTTY (){ 25 }
+sub ERANGE (){ 34 }
+sub EAGAIN (){ 35 }
+sub ENOSYS (){ 89 }
+
+sub O_ACCMODE   (){    0003 }
+sub O_RDONLY    (){      00 }
+sub O_WRONLY    (){      01 }
+sub O_RDWR      (){      02 }
+sub O_APPEND    (){  0x0008 }
+sub O_SYNC      (){  0x0010 }
+sub O_NONBLOCK  (){  0x0080 }
+sub O_CREAT     (){  0x0100 } # not fcntl
+sub O_TRUNC     (){  0x0200 } # not fcntl
+sub O_EXCL      (){  0x0400 } # not fcntl
+sub O_NOCTTY    (){  0x0800 } # not fcntl
+sub O_ASYNC     (){  0x1000 }
+sub O_NOFOLLOW  (){ 0x20000 }
+sub O_DIRECT    (){  0x8000 }
+sub O_DIRECTORY (){ 0x10000 }
+sub O_NOATIME   (){ 0x40000 }
+
+sub errno2mips() {
+   $!*1 # wrong, wrong, wrong
+}
+
+sub mips2omode($) {
+   my $mmode = shift;
+
+   my $omode = 0;
+
+   $omode |= Fcntl::O_RDONLY if ($mmode & O_ACCMODE) == O_RDONLY;
+   $omode |= Fcntl::O_WRONLY if ($mmode & O_ACCMODE) == O_WRONLY;
+   $omode |= Fcntl::O_RDWR   if ($mmode & O_ACCMODE) == O_RDWR;
+
+   for my $mode (qw(
+      APPEND SYNC NONBLOCK CREAT TRUNC EXCL NOCTTY
+      ASYNC NOFOLLOW DIRECT DIRECTORY NOATIME
+   )) {
+      eval "\$omode |= Fcntl::O_$mode if \$mmode & O_$mode";
+   }
+
+   $omode
+}
+
+my $enosys = sub {
+   warn "unimplemented syscall $r2\n";
+   die;
+};
+
+my @syscall = ($enosys) x 7000;
+
+############################################
+
+my @fh;
+my @dh; # directory-handles, HACK
+my $strace;
+
+for my $fd (3..9) {
+   open my $fh, "+<&=", $fd
+      or next;
+
+   $fh[$fd] = $fh;
+}
+for my $fd (0..2) {
+   open my $fh, "+<&", $fd
+      or next;
+
+   $fh[$fd] = $fh;
+}
+
+sub fd_valid($) {
+   !($_[0] & ~65535)
+   && $fh[$_[0]]
+}
+
+############################################
+
+sub strace($;@) {
+   $strace = $#_
+      ? sprintf $_[0], @_[1..$#_]
+      : shift;
+}
+
+sub newfd($) {
+   my $fd;
+   ++$fd while $fh[$fd];
+   $fh[$fd] = $_[0];
+   $fd
+}
+
+sub reify_fds {
+   my $top = 512;
+
+   for my $fd (0..$#fh) {
+      next unless $fh[$fd];
+
+      POSIX::dup2 fileno $fh[$fd], $top + $fd;
+      close $fh[$fd];
+   }
+
+   for my $fd (0..$#fh) {
+      next unless $fh[$fd];
+
+      POSIX::dup2 $top + $fd, $fd;
+      POSIX::close $top + $fd;
+
+      open my $fh, "+<&=", $fd
+        or die;
+
+     $fh[$fd] = $fh;
+   }
+}
+
+############################################
+
+sub newstat {
+   my $buf = shift;
+
+   if (@_) {
+      my $stat = pack "N x12 NNNNN x8 N x4 NN NN NN N N x56",
+         $_[ 0], # dev
+         $_[ 1], # ino
+         $_[ 2], # mode
+         $_[ 3], # nlink
+         $_[ 4], # uid
+         $_[ 5], # gid
+         $_[ 6], # rdev
+         $_[ 7], # size
+         $_[ 8], 0, # atime
+         $_[ 9], 0, # mtime
+         $_[10], 0, # ctime
+         $_[11], # blksize
+         $_[12]; # blocks
+
+      memset $buf, $stat;
+
+      return 0;
+   }
+
+   -errno2mips
+};
+
+sub stat64 {
+   my $buf = shift;
+
+   if (@_) {
+      my $stat = pack "N x12 NN NNNNN x12 NN NN NN NN N x4 NN",
+         $_[ 0], # dev
+         $_[ 1] >> 32, $_[1], # ino
+         $_[ 2], # mode
+         $_[ 3], # nlink
+         $_[ 4], # uid
+         $_[ 5], # gid
+         $_[ 6], # rdev
+         $_[ 7] >> 32, $_[7], # size
+         $_[ 8], 0, # atime
+         $_[ 9], 0, # mtime
+         $_[10], 0, # ctime
+         $_[11],    # blksize
+         $_[12] >> 32, $_[12]; # blocks
+
+      memset $buf, $stat;
+
+      return 0;
+   }
+
+   -errno2mips
+};
+
+sub sys_fcntl {
+   my ($fd, $cmd, $arg) = @_;
+   strace "fcntl (%d, %x, %x)", $fd, $cmd, $arg;
+   fd_valid $fd or return -EBADF;
+
+   if ($cmd == 0) { # F_DUPFD
+      ++$arg while $fh[$arg];
+      open my $fh, "+<&", fileno $fh[$fd]
+         or return -errno2mips;
+      $fh[$arg] = $fh;
+      return $arg;
+   } elsif ($cmd == 1) { # F_GETFD
+      return fcntl $fh[$fd], Fcntl::F_GETFD, 0;
+   } elsif ($cmd == 2) { # F_SETFD
+      return +(fcntl $fh[$fd], Fcntl::F_SETFD, $arg+0)
+         ? 0 : -errno2mips;
+   } elsif ($cmd == 3) { # F_GETFL
+      return O_RDWR; # HACK
+   } else {
+      # 4 F_SETFL
+      warn sprintf"unknown fcntl %d,%x,%x\n", $fd, $cmd, $arg;
+   }
+
+   -ENOSYS
+};
+
+############################################
+
+$syscall[4001] = sub { # exit
+   strace "exit ($_[0])";
+   exit $_[0];
+};
+$syscall[4002] = sub { # fork
+   strace "fork";
+
+   my $pid = fork;
+   return -errno2mips unless defined $pid;
+   $pid
+};
+$syscall[4003] = sub { # read
+   my ($fd, $rbuf, $count) = @_;
+   strace "read (%d, %x, %d)", $fd, $rbuf, $count;
+
+   $count = sysread $fh[$fd], my $buf, $count;
+
+   memset $rbuf, $buf;
+
+   defined $count ? $count : -errno2mips
+};
+
+$syscall[4004] = sub { # write
+   my ($fd, $buf, $count) = @_;
+   strace "write (%d, %x, %d)", $fd, $buf, $count;
+
+   $count = syswrite $fh[$fd], memget $buf, $count;
+   defined $count ? $count : -errno2mips
+};
+$syscall[4005] = sub { # open
+   my ($path, $flags, $mode) = @_;
+   $path = memstr $path;
+   strace "open (%s, %x, %o)", $path, $flags, $mode;
+
+   if (opendir my $dh, $path) {#d#
+      open my $fh, "</dev/null"or die;
+      my $fd = newfd $fh;
+      $dh[$fd] = $dh;
+      return $fd;
+   }
+
+   sysopen my $fh, $path, mips2omode $flags, $mode
+      or return -errno2mips;
+
+   newfd $fh
+};
+$syscall[4006] = sub { # close
+   my ($fd) = @_;
+   strace "close ($fd)";
+   fd_valid $fd or return -EBADF;
+
+   undef $dh[$fd];#d#
+   (close delete $fh[$fd])
+      ? 0 : -errno2mips
+};
+
+$syscall[4010] = sub { # unlink
+   my ($path) = @_;
+   $path = memstr $path;
+   strace "unlink (%s)", $path;
+
+   (defined unlink $path)
+      ? 0 : -errno2mips
+};
+$syscall[4011] = sub { # execve
+   my ($path, $argv, $envv) = @_;
+   $path = memstr $path;
+
+   for my $vec ($argv, $envv) {
+      my $addr = $vec;
+      $vec = [];
+      while () {
+         my $ptr = unpack "N", memget $addr, 4
+            or last;
+         push @$vec, memstr $ptr;
+         $addr += 4;
+      }
+   }
+
+   local %ENV;
+   /([^=]*)=(.*)/s, $ENV{$1} = $2
+      for @$envv;
+
+   ($path, $argv->[0]) = ($argv->[0], $path);
+
+   reify_fds;
+     
+   exec {$path} @$argv;
+
+   # not normally printed...
+   strace "execve (%s, [%s], [%s])", $path, (join "|", @$argv), (join "|", @$envv);
+
+   -errno2mips
+};
+$syscall[4012] = sub { # chdir
+   my $path = memstr $_[0];
+   strace "chdir (%s)", $path;
+
+   (chdir $path) ? 0 : -errno2mips
+};
+$syscall[4013] = sub { # time
+   my ($rbuf) = @_;
+   strace "time (%x)", $rbuf;
+
+   my $time = time;
+
+   memset $rbuf, pack "N", $time;
+   $time
+};
+
+$syscall[4020] = sub { strace "getpid ()"; $$ };
+
+$syscall[4024] = sub { strace "getuid ()"; $< };
+
+$syscall[4033] = sub { # access
+   my ($path, $mode) = @_;
+   $path = memstr $path;
+   strace "acess (%s, %o)", $path, $mode;
+
+   0
+
+};
+
+$syscall[4037] = sub { # kill
+   strace "kill ($_[0], $_[1])";
+   
+   (kill $_[1], $_[0]) # todo signal numbers?
+      ? 0 : -errno2mips
+};
+
+$syscall[4041] = sub { # dup
+   my ($fd) = @_;
+   strace "dup ($fd)";
+   fd_valid $fd or return -EBADF;
+
+   open my $fh, "+<&", fileno $fh[$fd]
+      or return -errno2mips;
+
+   newfd $fh
+};
+$syscall[4042] = sub { # sysm_pipe
+   strace "sysm_pipe ()";
+
+   pipe my $r, my $w
+      or return -errno2mips;
+
+   $r = newfd $r;
+   $w = newfd $w;
+
+   strace "sysm_pipe ($r, $w)";
+
+   $r3 = $w;
+         $r
+};
+
+$syscall[4045] = sub { # brk
+   strace "brk (%x)", $_[0];
+   my $brk = $_[0];
+   $brk = MINBRK if $brk < MINBRK;
+   $brk
+}; # brk
+
+$syscall[4047] = sub { strace "getgid ()" ; $( };
+
+$syscall[4049] = sub { strace "geteuid ()"; $> };
+$syscall[4050] = sub { strace "getegid ()"; $) };
+
+$syscall[4054] = sub { # ioctl
+   my ($fd, $req, $arg) = @_;
+   strace "ioctl (%d, %x, %x)", $fd, $req, $arg;
+   fd_valid $fd or return -EBADF;
+
+   if ($req == 0x540d) { # TCGETS
+      if (-t $fh[$fd]) {
+         memset $arg, pack "NNNN C C23";
+         return 0;
+      }
+   } elsif ($req == 0x540f) { # TCSETW
+      return 0;
+   } elsif ($req == 0x40047477) { # TIOCGPGRP # irix???
+      memset $arg, pack "N", getpgrp; # hacky, but does...
+      return 0;
+   } elsif ($req == 0x80047476) { # TIOCSPGRP # irix???
+      return 0; # whatever you say...
+   } elsif ($req == 0x40087468) { # TIOCGWINSZ
+      return -ENOSYS;
+   } else {
+      warn sprintf"unknown ioctl %d,%x,%x\n", $fd, $req, $arg;
+   }
+
+   -ENOTTY
+};
+$syscall[4055] = \&sys_fcntl; # fcntl
+
+$syscall[4057] = sub { # getpgid
+   strace "getpgid ($_[0])";
+
+   $_[0] == $$
+      ? getpgrp : $$ # hacky, but it's a bsd'ism
+};
+
+$syscall[4060] = sub { strace "umask (%o)", $_[0]; umask $_[0] };
+
+$syscall[4063] = sub { # dup2
+   my ($fd1, $fd2) = @_;
+   strace "dup2 ($fd1, $fd2)";
+   fd_valid $fd1 or return -EBADF;
+
+   open my $fh, "+<&", fileno $fh[$fd1]
+      or return -errno2mips;
+
+   $dh[$fd2] = $dh[$fd1];
+   $fh[$fd2] = $fh;
+   $fd2
+};
+
+$syscall[4064] = sub { strace "getppid ()"; getppid };
+$syscall[4065] = sub { strace "getpgrp ()"; getpgrp };
+
+$syscall[4075] = sub { # setrlimit
+   my ($resource, $rlim) = @_;
+   strace "setrlimit (%d, %x)", $resource, $rlim;
+
+   0
+};
+$syscall[4076] = sub { # getrlimit
+   my ($resource, $rlim) = @_;
+   strace "getrlimit (%d, %x)", $resource, $rlim;
+
+   -ENOSYS
+};
+
+$syscall[4078] = sub { # gettimeofday
+   my ($tv, $tz) = @_;
+   strace "gettimeofday (%x, %x)", $tv, $tz;
+
+   my ($s, $m) = Time::HiRes::gettimeofday;
+   memset $tv, pack "NN", $s, $m if $tv;
+   memset $tz, pack "NN", 0, 0 if $tz; # minuteswest, dsttime
+
+   0
+};
+
+#$syscall[4080] = sub { # getgroups
+
+$syscall[4090] = sub {
+   # SYSCALL_DEFINE6(mips_mmap, unsigned long, addr, unsigned long, len,
+   #         unsigned long, prot, unsigned long, flags, unsigned long,
+   #         fd, off_t, offset)
+
+   strace "mips_mmap (%x, %d, %x, %x, %d, %d)", @_;
+   -ENOSYS
+};
+
+$syscall[4097] = sub { # setpriority
+   # ...
+   -ENOSYS
+};
+
+$syscall[4099] = sub { # statfs
+   my ($path, $buf) = @_;
+   $path = memstr $path;
+   strace "statfs (%s, %x)", $path, $buf;
+
+   -ENOSYS
+};
+$syscall[4100] = sub { # fstatfs
+   my ($fd, $buf) = @_;
+   strace "fstatfs (%d, %x)", $fd, $buf;
+
+   -ENOSYS
+};
+
+$syscall[4106] = sub { # newstat
+   my ($path, $buf) = @_;
+   $path = memstr $path;
+   strace "newstat (%s, %x)", $path, $buf;
+
+   newstat $buf, stat $path
+};
+$syscall[4107] = sub { # newlstat
+   my ($path, $buf) = @_;
+   $path = memstr $path;
+   strace "newlstat (%s, %x)", $path, $buf;
+
+   newstat $buf, lstat $path
+};
+$syscall[4108] = sub { # newfstat
+   my ($fd, $buf) = @_;
+   strace "newfstat (%d, %x)", $fd, $buf;
+
+   newstat $buf, stat $fh[$fd]
+};
+
+$syscall[4114] = sub { # wait4
+   my ($pid, $statusbuf, $options, $rusage) = @_;
+   $pid = unpack "l", pack "L", $pid;
+   strace "wait4 (%d, %x, %x, %x)", $pid, $statusbuf, $options, $rusage;
+
+   memset $rusage, "\x00" x 72
+      if $rusage;
+   
+   $pid = waitpid $pid, $options;
+
+   memset $statusbuf, pack "N", $? if $statusbuf;
+
+   $pid >= 0 ? $pid : -errno2mips
+};
+
+$syscall[4122] = sub { # newuname
+   my ($buf) = @_;
+   strace "newuname (%x)", $buf;
+
+   memset $buf, pack "a65 a65 a65 a65 a65 a65", #d#
+      "sysname",
+      "nodename",
+      "release",
+      "version",
+      "machine",
+      "domainname";
+
+   0
+};
+
+$syscall[4140] = sub { # llseek
+   my ($fd, $high, $low, $result, $whence) = @_;
+   strace "llseek (%d, %x, %08x, %x, %d)", $fd, $high, $low, $result, $whence;
+
+   my $res = sysseek $fh[$fd], ($high << 32) | $low, $whence;
+
+   memset $result, pack "NN", ($res >> 32), $res;
+
+   defined $res
+      ? 0 : -errno2mips
+};
+
+$syscall[4194] = sub { # sigaction
+   my ($signum, $act, $oldact) = @_;
+   strace "sigaction (%d, %x, %x)", $signum, $act, $oldact;
+   -ENOSYS
+};
+$syscall[4195] = sub { # sigprocmask
+   my ($how, $set, $oldset) = @_;
+   strace "sigprocmask ($how, $set, $oldset)";
+
+   -ENOSYS
+};
+
+$syscall[4203] = sub { # getcwd
+   my $cwd = Cwd::getcwd;
+   strace "getcwd (%x, %d)", $_[0], $_[1];
+
+   if ((length $cwd) < $_[1]) {
+      memset $_[0], "$cwd\x00";
+      return 1 + length $cwd;
+   } else {
+      return -ERANGE;
+   }
+};
+
+$syscall[4213] = sub { # stat64
+   my ($path, $buf) = @_;
+   $path = memstr $path;
+   strace "stat64 (%s, %x)", $path, $buf;
+
+   stat64 $buf, stat $path
+};
+$syscall[4214] = sub { # lstat64
+   my ($path, $buf) = @_;
+   $path = memstr $path;
+   strace "lstat64 (%s, %x)", $path, $buf;
+
+   stat64 $buf, lstat $path
+};
+$syscall[4215] = sub { # fstat64
+   my ($fd, $buf) = @_;
+   strace "fstat64 (%d, %x)", $fd, $buf;
+
+   stat64 $buf, stat $fh[$fd]
+};
+
+$syscall[4219] = sub { # getdents64
+   my ($fd, $dirp, $count) = @_;
+   strace "getdents64 (%d, %x, %d)", $fd, $dirp, $count;
+
+   my $name = readdir $dh[$fd];
+
+   return 0 unless defined $name;
+
+   my $ino = -1;
+   my $type = 0;
+
+   my $entry = pack "NN NN n C Z*",
+      $ino >> 32, $ino,
+      0, 0, # offset
+      (length $name) + 20,
+      $type,
+      $name;
+
+   memset $dirp, $entry;
+   length $entry
+};
+$syscall[4220] = \&sys_fcntl; # fcntl64
+
+$syscall[4283] = sub { # set_thread_area
+   my ($udesc) = @_;
+
+   strace "set_thread_area (%x)", $udesc;
+
+   -ENOSYS
+};
+
+$syscall[4300] = sub { # faccessat
+   my ($dirfd, $path, $mode, $flags) = @_;
+
+   strace "faccessat (%d, %s, %o, %x)", $dirfd, $path, $mode, $flags;
+
+   0 # #d# grant any access
+};
+
+sub sys {
+   my @args =  map $_*1,
+      $r4, $r5, $r6, $r7, # first four args in regs
+      # extra arguments on stack
+      $mem[($r29 + 16) >> ADDR_SHIFT][(($r29 + 16) >> 2) & ADDR_MASK],
+      $mem[($r29 + 20) >> ADDR_SHIFT][(($r29 + 20) >> 2) & ADDR_MASK],
+      $mem[($r29 + 24) >> ADDR_SHIFT][(($r29 + 24) >> 2) & ADDR_MASK],
+      $mem[($r29 + 28) >> ADDR_SHIFT][(($r29 + 28) >> 2) & ADDR_MASK],
+   ;
+
+   $strace = "$r2 (@args)";
+   my $retval = $syscall[$r2](@args);
+   print STDERR "$$ SYS_$strace = $retval\n" if STRACE;
+
+   if ($retval > -4096 && $retval < 0) {
+      $r2 = -$retval;
+      $r7 = 1;
+   } else {
+      $r2 = $retval;
+      $r7 = 0;
+   }
+}
+
+#############################################################################
+# mips i big endian cpu emulator
+
+############################################
+# specials (opcode 0)
+
+my ($s, $t, $i); # "global" for speed
+
+my @special = ('die "special ", $insn & 63, " not supported"') x 64;
+
+$special[ 0] = "RD = (RT                       << SA       ) & M32"; # sll
+
+$special[ 2] = 'RD =  RT                       >> SA              '; # srl
+
+$special[ 3] = 'RD = ((RT - ((RT & B31) << 1)) >> SA       ) & M32'; # sra
+$special[ 4] = 'RD =  (RT                      << (RS & 31)) & M32'; # sllv
+
+$special[ 6] = 'RD =   RT                      >> (RS & 31)       '; # srlv
+$special[ 7] = 'RD = ((RT - ((RT & B31) << 1)) >> (RS & 31)) & M32'; # srav
+$special[ 8] = '               $pc = RS >> 2'; # jr
+$special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
+
+$special[12] = "sys";
+$special[13] = "die sprintf \"BREAK (%08x)\\\n\", $insn"; # break
+
+$special[16] = 'RD = $hi'; # mfhi
+$special[17] = '$hi = RS'; # mthi
+$special[18] = 'RD = $lo'; # mflo
+$special[19] = '$lo = RS'; # mtlo
+
+$special[24] =  '# mult
+   $lo = (RS - ((RS & B31) << 1))
+       * (RT - ((RT & B31) << 1));
+   $hi = ($lo >> 32) & M32;
+   $lo &= M32;
+';
+$special[25] = ' # multu
+   $lo = RS * RT;
+   $hi = $lo >> 32;
+   $lo &= M32;
+';
+$special[26] = ' # div
+   $s = RS - ((RS & B31) << 1);
+   $t = RT - ((RT & B31) << 1)
+      or return;
+
+   $lo = ($s / $t) & M32;
+   $hi = ($s % $t) & M32;
+';
+$special[27] = ' # divu
+   RT or return;
+
+   $lo = RS / RT;
+   $hi = RS % RT;
+';
+
+$special[32] = 'die "add instruction unsupported"';
+$special[33] = "RD = (RS + RT) & M32"; # addu
+$special[34] = 'die "sub instruction unsupported"';
+$special[35] = "RD = (RS - RT) & M32"; # subu
+#$special[32] = $special[33]; # add # buggy, does not trap #d#
+#$special[34] = $special[35]; # sub # buggy, does not trap #d#
+
+$special[36] = "RD =  RS & RT       "; # and
+$special[37] = "RD =  RS | RT       "; # or
+$special[38] = "RD =  RS ^ RT       "; # xor
+$special[39] = "RD = (RS ^ RT) ^ M32"; # nor
+
+$special[42] = "RD = (RS - ((RS & B31) << 1)) < (RT - ((RT & B31) << 1))"; # slt
+$special[43] = "RD =  RS                      <  RT                     "; # sltu
+
+############################################
+# regimm (opcode 1)
+
+my @regimm = ('die "regimm $insn not supported"') x 32;
+
+$regimm[ 0] = '                    $pc += IMM - 1  if     RS & 0x80000000'; # bltz
+$regimm[16] = '($r31 = $pc << 2), ($pc += IMM - 1) if     RS & 0x80000000'; # bltzal
+$regimm[ 1] = '                    $pc += IMM - 1  unless RS & 0x80000000'; # bgez
+$regimm[17] = '($r31 = $pc << 2), ($pc += IMM - 1) unless RS & 0x80000000'; # bgezal bal
+
+############################################
+# others
+
+my @opcode;
+
+$opcode[ 0] = sub { $special[$insn & 63] }; # special
+$opcode[ 1] = sub { $regimm[($insn >> 16) & 31] }; # regimm
+$opcode[ 2] = sub { '                 $pc = ($pc & 0x3c000000) | (' . $insn . ' & 0x03ffffff)' }; # j
+$opcode[ 3] = sub { '$r31 = $pc << 2; $pc = ($pc & 0x3c000000) | (' . $insn . ' & 0x03ffffff)' }; # jal
+$opcode[ 4] = sub { '($pc += IMM - 1) if RS == RT' }; # beq beqz b
+$opcode[ 5] = sub { '($pc += IMM - 1) if RS != RT' }; # bne bnez
+$opcode[ 6] = sub { '($pc += IMM - 1) if !RS || RS >= 0x80000000' }; # blez
+$opcode[ 7] = sub { '($pc += IMM - 1) if  RS && RS <  0x80000000' }; # bgtz
+$opcode[ 8] = sub { die "addi instruction unsupported" }; # addi
+$opcode[ 9] = sub { "RT = (RS + IMM) & M32" }; # addiu
+$opcode[10] = sub { 'RT = ((RS - ((RS & B31) << 1))) <  IMM       ' }; # slti
+$opcode[11] = sub { 'RT =   RS                       < (IMM & M32)' }; # sltiu
+$opcode[12] = sub { 'RT = RS & IMMU' }; # andi
+$opcode[13] = sub { 'RT = RS | IMMU' }; # ori
+$opcode[14] = sub { 'RT = RS ^ IMMU' }; # xori
+$opcode[15] = sub { 'RT = IMMU << 16' }; # lui
+
+$opcode[32] = sub {' # lb
+   $i = RS + IMM;
+   $s = (~$i & 3) << 3;
+   $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
+   RT = (($s &  M8) - (($s &  B7) << 1)) & M32;
+'};
+$opcode[33] = sub {' # lh
+   $i = RS + IMM;
+   $s = (~$i & 2) << 3;
+   $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
+   RT = (($s & M16) - (($s & B15) << 1)) & M32;
+'};
+$opcode[34] = sub {' # lwl
+   $i = RS + IMM;
+   $s = ($i & 3) << 3;
+   $i = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   RT = (RT & (M32 >> (32 - $s))) | ($i << $s & M32);
+'};
+$opcode[35] = sub {' # lw
+   $i = RS + IMM;
+   RT = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+'};
+$opcode[36] = sub {' # lbu
+   $i = RS + IMM;
+   $s = (~$i & 3) << 3;
+   RT = ($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & M8;
+'};
+$opcode[37] = sub {' # lhu
+   $i = RS + IMM;
+   $s = (~$i & 2) << 3;
+   RT = ($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & M16;
+'};
+$opcode[38] = sub {' # lwr
+   $i = RS + IMM;
+   $s = (($i & 3) + 1) << 3;
+   $i = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   RT = (RT >> $s << $s) | ($i >> (32 - $s));
+'};
+
+$opcode[40] = sub {' # sb
+   $i = RS + IMM;
+   $s = (~$i & 3) << 3;
+   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $$i = ($$i & ~(M8  << $s)) | (RT & M8 ) << $s;
+'};
+$opcode[41] = sub {' # sh
+   $i = RS + IMM;
+   $s = (~$i & 2) << 3;
+   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $$i = ($$i & ~(M16 << $s)) | (RT & M16) << $s;
+'};
+$opcode[42] = sub {' # swl
+   $i = RS + IMM;
+   $s = ((~$i & 3) + 1) << 3;
+   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $$i = ($$i >> $s << $s) | (RT >> (32 - $s));
+'};
+$opcode[43] = sub {' # sw
+   $i = RS + IMM;
+   $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] = RT;
+'};
+
+$opcode[46] = sub {' # swr
+   $i = RS + IMM;
+   $s = (($i & 3) + 1) << 3;
+   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $$i = $$i & (M32 >> $s) | ((RT << (32 - $s)) & M32);
+'};
+
+# 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
+
+my $NOP = sub { };
+
+sub get_insn {
+   $insn2sub{$_[0]} ||= do {
+      my $old_insn = $insn;#d#
+
+      $insn = $_[0]*1;
+      my $src = &{ $opcode[$insn >> 26] };
+
+      $src =~ s/\bIMM\b/($insn & M16) - (($insn & B15) << 1)/ge; # 16 bit signed immediate
+      $src =~ s/\bIMMU\b/$insn & M16/ge;                         # 16 bit unsigned immediate
+
+      $src =~ s/\bSA\b/($insn >> 6) & 31/ge;                     # shift amount
+
+      $src =~ s/\bRS\b/'$r' . (($insn >> 21) & 31)/ge;           # s register
+      $src =~ s/\bRT\b/'$r' . (($insn >> 16) & 31)/ge;           # t register
+      $src =~ s/\bRD\b/'$r' . (($insn >> 11) & 31)/ge;           # d register
+
+      $src =~ s/\$r0 = //g; # optimize away r0 assignments
+      $src =~ s/\$r0\b/0/g; # optimise away r0 access
+
+      my $cb = ($insn ? eval "sub { $src }" : $NOP)
+         || die "$insn<$src>: $@";
+
+#      $insn2src{$insn} = $src;
+      $sub2insn{$cb+0} = $insn;
+
+      $insn = $old_insn;#d#
+
+      $cb
+   }
+}
+
+sub cpu_reset($) {
+   $pc = $_[0] >> 2;
+
+   $r0  = 0;
+
+          $r1  = $r2  = $r3  = $r4  = $r5  = $r6  = $r7  =
+   $r8  = $r9  = $r10 = $r11 = $r12 = $r13 = $r14 = $r15 =
+   $r16 = $r17 = $r18 = $r19 = $r20 = $r21 = $r22 = $r23 =
+   $r24 = $r25 = $r26 = $r27 = $r28 =        $r30 =
+   $hi  = $lo  = 0xdeadbeef;
+
+   $r2  = 0;
+   $r29 = STACK;
+   $r31 = 0;
+
+   $delay = $NOP; # start with a nop
+}
+
+sub cpu_run() {
+   while () {
+      $insn = $delay;
+
+      if (PRIPS) {
+         unless (++$::n & 0xfffff) {
+            no integer;
+            open my $tty, ">/dev/tty";
+            printf {$tty} "%g ips\n", $::n / (Time::HiRes::time - $::t0);
+            $::n = 0; $::t0 = Time::HiRes::time;#d#
+         }
+      }
+
+      if (PRCPU) {
+         defined $insn or die "undefined insn access\n";#d#
+         cpu_pr;
+      }
+
+      $delay = $mem[$pc >> (ADDR_SHIFT - 2)][$pc & ADDR_MASK];
+      unless (ref $delay) {
+         $delay =
+         $mem[$pc >> (ADDR_SHIFT - 2)][$pc & ADDR_MASK] =
+            get_insn $delay;
+      }
+      ++$pc;
+
+      &$insn;
+   }
+}
+
+#############################################################################
+
+sub mips_exec($$;$$) {
+   my ($path, $argv, $envv, $auxv) = @_;
+
+   mem_reset;
+
+   my $file= ref $path
+      ? $$path
+      : do { open my $fh, "<", $path; local $/; <$fh> };
+
+   # 32 bit, msb, elf version
+   "\x7fELF\x01\x02\x01" eq substr $file, 0, 7
+      or die "not an elf file, or wrong class, encoding or version";
+
+   my ($type, $machine, undef, $entry, $phoff, undef, undef,  undef, $phentsize, $phnum) = unpack "nnNNNNNnnn", substr $file, 0x10;
+
+   $type == 2
+      or die "file not an executable";
+
+   $machine == 8
+      or die "file not mips r3000 big endian";
+
+   for my $i (0 .. $phnum - 1) {
+      my ($type, $offset, $vaddr, $physaddr, $size, $memsz, $flags, $align) =
+         unpack "N*", substr $file, $phoff + $i * $phentsize, 32;
+
+      $type != 2
+         or die "dynamic loading is not supported";
+
+      next unless $type == 1;
+      next unless $size;
+
+      for my $o (0 .. $size / 4 - 1) {
+         my $w = unpack "N", substr $file, $offset + $o * 4, 4;
+         my $a = $vaddr + $o * 4;
+#         printf "LOAD %08x = %08x\n", $a, $w;
+         $mem[$a >> ADDR_SHIFT][($a >> 2) & ADDR_MASK] = $w;
+      }
+   }
+
+   cpu_reset $entry;
+
+   {
+      my $str = STACK + 65536;
+      my $ptr = STACK;
+
+      my $add_int = sub {
+         memset $ptr, pack "N", $_[0];
+         $ptr += 4;
+      };
+
+      my $add_str = sub {
+         $add_int->($str);
+         memset $str, "$_[0]\x00";
+         $str += 1 + length $_[0];
+      };
+
+      $add_int->(scalar @$argv);
+      $add_str->($_) for @$argv;
+      $add_int->(0);
+
+      $add_str->($_) for @$envv;
+      $add_int->(0);
+
+      # auxv
+      $add_int->($_->[0]), $add_int->($_->[1])
+         for @$auxv;
+
+      $add_int->(0);
+      $add_int->(0);
+   }
+}
+
+if (0) {
+   mips_exec
+      "/tmp/dash-mipsel",
+      ["./run", @ARGV],
+#   ["sh", "-c", "for d in 0 1 2 3 4 5 6 7 8 9; do for a in 0 1 2 3 4 5 6 7 8 9; do for b in 0 1 2 3 4 5 6 7 8 9; do for c in 0 1 2 3 4 5 6 7 8 9; do :;done;done;done;done"],
+      [map "$_=$ENV{$_}", keys %ENV];
+} else {
+
+   my $file;
+
+   if (my $data = do { local $/; binmode DATA; <DATA> }) {
+      $file = \$data;
+      unshift @ARGV, $0;
+   } else {
+      $file = $ARGV[0];
+   }
+
+   mips_exec $file, \@ARGV, [map "$_=$ENV{$_}", keys %ENV];
+}
+
+$::t0 = Time::HiRes::time;
+$::n = 0;
+cpu_run;
+
