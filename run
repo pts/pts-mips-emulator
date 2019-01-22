@@ -821,7 +821,7 @@ $special[24] =  '# mult
 ';
 $special[25] = ' # multu
    $lo = RS * RT;
-   $hi = $lo >> 32;
+   $hi = ($lo >> 32) & M32;
    $lo &= M32;
 ';
 $special[26] = ' # div
