@@ -1094,13 +1094,17 @@ sub mips_exec($$;$$) {
       die "seek: $!" if !seek($file, $offset + $base_ofs, 0);
       my $data;
       $size = ($size + 3) & ~3;
-      # TODO(pts): Read smaller chunks.
-      die "read: $!" if $size != (read($file, $data, $size) or 0);
-      for my $o (0 .. ($size >> 2) - 1) {
-         my $w = vec($data, $o, 32);
-         my $a = $vaddr + $o * 4;
-         #printf "LOAD %08x = %08x\n", $a, $w;
-         $mem[$a >> ADDR_SHIFT][($a >> 2) & ADDR_MASK] = $w;
+      while ($size > 0) {
+         my $toread = $size < 65536 ? $size : 65536;
+         # TODO(pts): Read smaller chunks.
+         die "read: $!" if $toread != (read($file, $data, $toread) or 0);
+         for my $o (0 .. ($toread >> 2) - 1) {
+            my $w = vec($data, $o, 32);
+            my $a = $vaddr + $o * 4;
+            #printf "LOAD %08x = %08x\n", $a, $w;
+            $mem[$a >> ADDR_SHIFT][($a >> 2) & ADDR_MASK] = $w;
+         }
+         $size -= $toread; $offset += $toread; $vaddr += $toread;
       }
    }
 
