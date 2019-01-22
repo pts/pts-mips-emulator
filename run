@@ -21,7 +21,7 @@ use POSIX ();
 use Cwd ();
 use Fcntl ();
 
-pack "Q", 5; # make sure it's a 64 bit perl
+die "64-bit Perl required" if eval { pack("Q>", 5) } ne "\0\0\0\0\0\0\0\5";
 
 #############################################################################
 # system state
@@ -355,7 +355,7 @@ $syscall[4003] = sub { # read
    my ($fd, $rbuf, $count) = @_;
    strace "read (%d, %x, %d)", $fd, $rbuf, $count;
 
-   $count = sysread $fh[$fd], my $buf, $count;
+   $count = sysread $fh[$fd], my($buf), $count;
 
    memset $rbuf, $buf;
 
@@ -427,7 +427,7 @@ $syscall[4011] = sub { # execve
 
    reify_fds;
      
-   exec {$path} @$argv;
+   die "unexpected success from exec" if exec {$path} @$argv;
 
    # not normally printed...
    strace "execve (%s, [%s], [%s])", $path, (join "|", @$argv), (join "|", @$envv);
@@ -1121,8 +1121,10 @@ if (0) {
 } else {
 
    my $file;
-
-   if (my $data = do { local $/; binmode DATA; <DATA> }) {
+   if (defined(fileno(DATA))) {
+      die "binmode: $!" if !binmode(DATA);
+      local $/;
+      my $data = <DATA>;
       $file = \$data;
       unshift @ARGV, $0;
    } else {
