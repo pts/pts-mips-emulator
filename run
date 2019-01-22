@@ -964,6 +964,7 @@ sub get_insn {
       my $old_insn = $insn;#d#
 
       $insn = $_[0]*1;
+      # TODO(pts): When do we fail with this? Can't use an undefined value as a subroutine reference
       my $src = &{ $opcode[$insn >> 26] };
 
       $src =~ s/\bIMM\b/($insn & M16) - (($insn & B15) << 1)/ge; # 16 bit signed immediate
@@ -1045,15 +1046,22 @@ sub mips_exec($$;$$) {
 
    mem_reset;
 
-   my $file= ref $path
-      ? $$path
-      : do { open my $fh, "<", $path; local $/; <$fh> };
+   my $file = $path;
+   if (ref $path ne 'GLOB') {
+     undef $file;
+     die "open $path: $!" if !open($file, "<", $path);
+   }
+
+   my $elf_header;
+   my $base_ofs = tell($file);
+   die "seek: $!" if !seek($file, $base_ofs, 0);
+   die "read: $!" if 0x32 != (read($file, $elf_header, 0x32) or 0);
 
    # 32 bit, msb, elf version
-   "\x7fELF\x01\x02\x01" eq substr $file, 0, 7
+   "\x7fELF\x01\x02\x01" eq substr $elf_header, 0, 7
       or die "not an elf file, or wrong class, encoding or version";
 
-   my ($type, $machine, undef, $entry, $phoff, undef, undef,  undef, $phentsize, $phnum) = unpack "nnNNNNNnnn", substr $file, 0x10;
+   my ($type, $machine, undef, $entry, $phoff, undef, undef,  undef, $phentsize, $phnum) = unpack "x16nnNNNNNnnn", $elf_header;
 
    $type == 2
       or die "file not an executable";
@@ -1061,9 +1069,13 @@ sub mips_exec($$;$$) {
    $machine == 8
       or die "file not mips r3000 big endian";
 
+   die "seek: $!" if !seek($file, $phoff + $base_ofs, 0);
+   my $phents;
+   die "read phents: $!" if 0x20 * $phnum !=
+       (read($file, $phents, 0x20 * $phnum) or 0);
    for my $i (0 .. $phnum - 1) {
       my ($type, $offset, $vaddr, $physaddr, $size, $memsz, $flags, $align) =
-         unpack "N*", substr $file, $phoff + $i * $phentsize, 32;
+         unpack "N*", substr($phents, 0x20 * $i, 0x20);
 
       $type != 2
          or die "dynamic loading is not supported";
@@ -1071,10 +1083,15 @@ sub mips_exec($$;$$) {
       next unless $type == 1;
       next unless $size;
 
-      for my $o (0 .. $size / 4 - 1) {
-         my $w = unpack "N", substr $file, $offset + $o * 4, 4;
+      die "seek: $!" if !seek($file, $offset + $base_ofs, 0);
+      my $data;
+      $size = ($size + 3) & ~3;
+      # TODO(pts): Read smaller chunks.
+      die "read: $!" if $size != (read($file, $data, $size) or 0);
+      for my $o (0 .. ($size >> 2) - 1) {
+         my $w = vec($data, $o, 32);
          my $a = $vaddr + $o * 4;
-#         printf "LOAD %08x = %08x\n", $a, $w;
+         #printf "LOAD %08x = %08x\n", $a, $w;
          $mem[$a >> ADDR_SHIFT][($a >> 2) & ADDR_MASK] = $w;
       }
    }
@@ -1123,9 +1140,7 @@ if (0) {
    my $file;
    if (defined(fileno(DATA))) {
       die "binmode: $!" if !binmode(DATA);
-      local $/;
-      my $data = <DATA>;
-      $file = \$data;
+      $file = \*DATA;
       unshift @ARGV, $0;
    } else {
       $file = $ARGV[0];
