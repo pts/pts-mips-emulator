@@ -6,8 +6,16 @@ sub STRACE (){ 0 }
 sub PRCPU  (){ 0 }
 sub PRIPS  (){ 0 }
 
-use common::sense;
-no utf8; # activestate perl
+use strict;
+use warnings;
+no warnings qw(uninitialized);
+# Perl 5.10 reports lots of ambiguous warnings, e.g. -EBADF.
+no warnings qw(ambiguous);
+#use features qw(...);  # None needed.
+no utf8;
+# minor speed improvement, major correctness improvement for div/divu
+use integer;
+
 use Time::HiRes;
 use POSIX ();
 use Cwd ();
@@ -18,7 +26,6 @@ pack "Q", 5; # make sure it's a 64 bit perl
 #############################################################################
 # system state
 
-use integer; # minor speed improvement, major correctness improvement for div/divu
 
 sub ADDR_SHIFT(){         16 }
 sub ADDR_MASK (){     0x3fff }
