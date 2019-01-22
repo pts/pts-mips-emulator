@@ -12,7 +12,6 @@ use Time::HiRes;
 use POSIX ();
 use Cwd ();
 use Fcntl ();
-use List::Util ();
 
 pack "Q", 5; # make sure it's a 64 bit perl
 
