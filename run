@@ -14,7 +14,14 @@ no warnings qw(uninitialized);
 #use features qw(...);  # None needed.
 no utf8;
 
-use Time::HiRes;
+BEGIN {
+   eval { require Time::HiRes };
+   # Debian woody doesn't have `apt-get install libtime-hires-perl' by default,
+   # provide a fallback which lacks millisecond precision.
+   *Time::HiRes::gettimeofday = sub { time(), 0 } if
+       !defined(&Time::HiRes::gettimeofday);
+   *Time::HiRes::time = sub { time } if !defined(&Time::HiRes::time);
+}
 use POSIX ();
 use Cwd ();
 use Fcntl ();
