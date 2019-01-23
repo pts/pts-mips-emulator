@@ -146,6 +146,9 @@ my $insn;
 
 my %insn2src; # insn to perl source
 my %insn2sub; # insn to compiled perl sub
+# Shortcut for nop. It would work without it, nop is equivalent to:
+# sll $r0 $r0 0.
+$insn2sub{0} = sub {};
 
 sub cpu_pr {
    printf " 0 %8x=zr %8x=at %8x=v0 %8x=v1 %8x=a0 %8x=a1 %8x=a2 %8x=a3\n", $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7;
@@ -1076,10 +1079,9 @@ $opcode[46] = sub {' # swr
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
 
-my $NOP = sub { };
-
 sub get_insn() {
    $insn2sub{$insn} ||= do {
+      die "nop unexpected here" if !$insn;
       # TODO(pts): When do we fail with this? Can't use an undefined value as a subroutine reference
       my $src = &{ $opcode[$insn >> 26] };
 
@@ -1095,11 +1097,8 @@ sub get_insn() {
       $src =~ s/\$r0 = //g; # optimize away r0 assignments
       $src =~ s/\$r0\b/0/g; # optimise away r0 access
 
-      my $cb = ($insn ? eval "sub { $src }" : $NOP)
-         || die "$insn<$src>: $@";
-
+      my $cb = eval "sub { $src }" || die "$insn<$src>: $@";
       if (PRCPU) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
-
       $cb
    }
 }
