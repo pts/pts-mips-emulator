@@ -177,6 +177,7 @@ sub ENOMEM (){ 12 }
 sub ENOTTY (){ 25 }
 sub ERANGE (){ 34 }
 sub EAGAIN (){ 35 }
+sub ENOTSOCK(){ 88 }
 sub ENOSYS (){ 89 }
 
 sub O_ACCMODE   (){    0003 }
@@ -615,7 +616,16 @@ $syscall[4078] = sub { # gettimeofday
    0
 };
 
-#$syscall[4080] = sub { # getgroups
+$syscall[4080] = sub { # getgroups
+   # TODO(pts): Implement this properly, using additional numbers in $).
+   0
+};
+
+$syscall[4171] = sub { # getpeername
+   # TODO(pts): Implement this properly, with `use Socket;'. Can we do it
+   #            with a filehandle?
+   -(ENOTSOCK)
+};
 
 $syscall[4090] = sub {
    # SYSCALL_DEFINE6(mips_mmap, unsigned long, addr, unsigned long, len,

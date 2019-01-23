@@ -19,9 +19,20 @@ pts-mips-emulator has been tested and found working with:
 * Perl 5.18.2 (amd64, 64-bit integers, 2014-01-06)
 * Perl 5.24.1 (amd64, 64-bit integers, 2017-01-14)
 
-using the following command line:
+using the following command lines:
 
   $ perl ./run dash.run -c 'echo $((6*7))'
   42
+  $ perl ./run bash.run -c 'let ANSWER=6*7; echo $ANSWER'
+  42
+  $ perl ./run bash.run --version | head -1
+  GNU bash, version 4.1.0(1)-release (mips-unknown-linux-uclibc)
+
+The shells also work interactively:
+
+  $ PS1='. ' perl ./run dash.run
+  . exit
+  $ PS1=', ' perl ./run bash.run --norc
+  , exit
 
 __END__
