@@ -13,15 +13,32 @@ no warnings qw(uninitialized);
 no warnings qw(ambiguous);
 #use features qw(...);  # None needed.
 no utf8;
-# minor speed improvement, major correctness improvement for div/divu
-use integer;
 
 use Time::HiRes;
 use POSIX ();
 use Cwd ();
 use Fcntl ();
 
-die "64-bit Perl required" if eval { pack("Q>", 5) } ne "\0\0\0\0\0\0\0\5";
+my $use_int32;
+BEGIN {
+   require integer;
+   # Detection works with `use integer' and `no integer'.
+   if (((2 ** 31) ** 2 | 0) / 2 ** 31 >= 2 ** 30) {
+      if ($ENV{FORCE_INT32}) {
+        integer->unimport();  $use_int32 = 1;  # Works.
+      } else {
+        integer->import();  $use_int32 = 0;  # Works.
+      }
+   } elsif (((2 ** 15) ** 2 | 0) / 2 ** 15 >= 2 ** 14) {
+      if ($ENV{FORCE_INT32}) {
+        integer->unimport();  $use_int32 = 1;  # Doesn't work yet.
+      } else {
+        die "Perl with 32-bit integers not supported yet";
+      }
+   } else {
+      die "Perl with at least 32-bit integers needed";
+   }
+}
 
 #############################################################################
 # system state
@@ -813,31 +830,109 @@ $special[17] = '$hi = RS'; # mthi
 $special[18] = 'RD = $lo'; # mflo
 $special[19] = '$lo = RS'; # mtlo
 
-$special[24] =  '# mult
-   $lo = (RS - ((RS & B31) << 1))
-       * (RT - ((RT & B31) << 1));
-   $hi = ($lo >> 32) & M32;
-   $lo &= M32;
-';
-$special[25] = ' # multu
-   $lo = RS * RT;
-   $hi = ($lo >> 32) & M32;
-   $lo &= M32;
-';
-$special[26] = ' # div
-   $s = RS - ((RS & B31) << 1);
-   $t = RT - ((RT & B31) << 1)
-      or return;
+if ($use_int32) {
+   # It works with both 32-bit and 64-bit Perl, but only with `no integer'.
+   #
+   # It is doing https://en.wikipedia.org/wiki/IEEE_754 64-bit float
+   # (double) arithmetics with 53-bit significand, thus it's OK to multiply
+   # a 16-bit and a 32-bit unsigned integer.
+   $special[24] =  '# mult
+      if (RS <= 2147483647 and RT <= 2147483648 and ($s = RS * RT) <= 9007199254740991) {  # Shortcut.
+         $lo = $s % 4294967296;
+         $hi = ($s - $lo) / 4294967296;
+      } else {  # TODO(pts): Can we do it any shorter?
+         $s = RS;
+         $t = RT;
+         my $sign = 1;
+         ($s, $sign) = (4294967296 - $s, -$sign) if $s > 2147483647;
+         ($t, $sign) = (4294967296 - $t, -$sign) if $t > 2147483647;
+         $lo = $s % 65536;
+         $hi = ($s - $lo) / 65536 * $t;
+         $lo *= $t;
+         $t = $hi % 65536;
+         $lo += $t * 65536;
+         $hi = ($hi - $t) / 65536;
+         $t = $lo % 4294967296;
+         $hi += ($lo - $t) / 4294967296;
+         $lo = $t;
+         if ($sign < 0) {
+            if ($lo) {
+               $lo = 4294967296 - $lo;
+               $hi = 4294967295 - $hi;
+            } else {
+               $hi = 4294967296 - $hi;
+            }
+         }
+      }
+      #printf STDERR "CALL mult(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+      ';
+   $special[25] = ' # multu
+      $s = RS * RT;
+      if ($s <= 9007199254740991) {  # Shortcut.
+         $lo = $s % 4294967296;
+         $hi = ($s - $lo) / 4294967296;
+      } else {
+         $lo = RS % 65536;
+         $hi = (RS - $lo) / 65536 * RT;
+         $lo *= RT;
+         $t = $hi % 65536;
+         $lo += $t * 65536;
+         $hi = ($hi - $t) / 65536;
+         $t = $lo % 4294967296;
+         $hi += ($lo - $t) / 4294967296;
+         $lo = $t;
+      }
+      #printf STDERR "CALL multu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+      ';
+   $special[26] = ' # div
+      $s = RS - ((RS & B31) * 2);
+      $t = RT - ((RT & B31) * 2)
+         or return;
+      # Sign of the remainder ($hi) will be the sign of $t with no integer (here).
+      # Sign of the remainder ($hi) would be the sign of $s with use integer.
+      $hi = $s % $t;
+      $hi -= $t if $hi and (($s > 0 and $t < 0) or ($s < 0 and $t > 0));
+      $lo = (($s - $hi) / $t) & M32;
+      $hi = $hi & M32;
+      #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+   $special[27] = ' # divu
+      RT or return;
+      $hi = RS % RT;
+      $lo = (RS - $hi) / RT;
+      #printf STDERR "CALL divu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+} else {
+   $special[24] =  '# mult
+      $lo = (RS - ((RS & B31) << 1))
+          * (RT - ((RT & B31) << 1));
+      $hi = ($lo >> 32) & M32;
+      $lo &= M32;
+      #printf STDERR "CALL mult(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+   $special[25] = ' # multu
+      $lo = RS * RT;
+      $hi = ($lo >> 32) & M32;
+      $lo &= M32;
+      #printf STDERR "CALL multu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+   $special[26] = ' # div
+      $s = RS - ((RS & B31) << 1);
+      $t = RT - ((RT & B31) << 1)
+         or return;
 
-   $lo = ($s / $t) & M32;
-   $hi = ($s % $t) & M32;
-';
-$special[27] = ' # divu
-   RT or return;
+      $lo = ($s / $t) & M32;
+      $hi = ($s % $t) & M32;
+      #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+   $special[27] = ' # divu
+      RT or return;
 
-   $lo = RS / RT;
-   $hi = RS % RT;
-';
+      $lo = RS / RT;
+      $hi = RS % RT;
+      #printf STDERR "CALL divu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
+   ';
+}
 
 $special[32] = 'die "add instruction unsupported"';
 $special[33] = "RD = (RS + RT) & M32"; # addu
