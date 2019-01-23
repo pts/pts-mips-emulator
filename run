@@ -73,7 +73,7 @@ sub mask32($) {
 # !! TODO(pts): Make it faster for $use_int32 (and with mask, then shift).
 # Shift left.
 sub shl($$) {
-   die "bad shift amount\n" if $_[1] < 0 or $_[1] > 32;
+   die "bad shift amount\n" if $_[1] < 0 or $_[1] > 31;
    return $use_int32 ? $_[0] * (2 ** $_[1]) % 4294967296 : ($_[0] << $_[1]) & M32;
 }
 # !! double check ~ (bitwise not)
