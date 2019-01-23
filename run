@@ -142,27 +142,23 @@ my (
    $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31,
 );
 
-my $insn;
-
 my %insn2src; # insn to perl source
+$insn2src{0} = '#nop';
 my %insn2sub; # insn to compiled perl sub
 # Shortcut for nop. It would work without it, nop is equivalent to:
 # sll $r0 $r0 0.
 $insn2sub{0} = sub {};
 
-sub cpu_pr {
+# Print CPU state just before exectuing the instruction $delay.
+sub cpu_pr() {
    printf " 0 %8x=zr %8x=at %8x=v0 %8x=v1 %8x=a0 %8x=a1 %8x=a2 %8x=a3\n", $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7;
    printf " 8 %8x=t0 %8x=t1 %8x=t2 %8x=t3 %8x=t4 %8x=t5 %8x=t6 %8x=t7\n", $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15;
    printf "16 %8x=s0 %8x=s1 %8x=s2 %8x=s3 %8x=s4 %8x=s4 %8x=s6 %8x=s6\n", $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23;
    printf "24 %8x=t8 %8x=t9 %8x=k0 %8x=k1 %8x=gp %8x=sp %8x=fp %8x=ra\n", $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31;
-
-   die "undefined \$insn" if !defined($insn);
-   die "\$insn is a ref: " . ref($insn) if ref($insn);
-   die "\$delay is a ref: " . ref($delay) if ref($delay);
-
-   printf "pc=%8x\n", $pc << 2;
-   printf "insn =%8x: (%s)\n", $insn, $insn2src{$insn};
-   printf "delay=%8x: (%s)\n", $delay, $insn2src{$delay};
+   printf "   %8x=pc %8x=lo %8x=hi\n", $pc << 2, $lo, $hi;
+   printf "delay=%8x: (%s)\n", $delay, (get_insn($delay) and $insn2src{$delay});
+   my $nextinsn = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+   printf "nextinsn=%8x: (%s)\n", $nextinsn, (get_insn($nextinsn) and $insn2src{$nextinsn});
 }
 
 ############################################
@@ -831,7 +827,7 @@ sub sys {
 
 my ($s, $t, $i); # "global" for speed
 
-my @special = ('die "special ", $insn & 63, " not supported"') x 64;
+my @special = ('die "special ". ($insn & 63) . " not supported"') x 64;
 
 $special[ 0] = "RD = shl(RT, SA)"; # sll
 
@@ -845,8 +841,8 @@ $special[ 7] = 'die "fix.for.\$use_int32.srav" if $use_int32 and RT < 0; RD = ma
 $special[ 8] = '               $pc = RS >> 2'; # jr
 $special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
 
-$special[12] = "sys";
-$special[13] = "die sprintf \"BREAK (%08x)\\\n\", \$insn"; # break
+$special[12] = 'sys';
+$special[13] = 'die sprintf "BREAK (%08x)", $insn'; # break
 
 $special[16] = 'RD = $hi'; # mfhi
 $special[17] = '$hi = RS'; # mthi
@@ -975,7 +971,7 @@ $special[43] = "RD =  RS                     <  RT                    "; # sltu
 ############################################
 # regimm (opcode 1)
 
-my @regimm = ('die "regimm $insn not supported"') x 32;
+my @regimm = ('die "regimm " . (($insn >> 16) & 31) . " not supported"') x 32;
 
 # !! What if $pc overflows or underflows here?
 $regimm[ 0] = '                    $pc += IMM - 1  if     RS & 0x80000000'; # bltz
@@ -1074,7 +1070,8 @@ $opsrc[46] = ' # swr
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
 
-sub get_insn() {
+sub get_insn($) {
+   my $insn = $_[0];
    $insn2sub{$insn} ||= do {
       die "nop unexpected here" if !$insn;
       my $opcode = $insn >> 26;
@@ -1124,7 +1121,6 @@ sub cpu_reset($) {
 
 sub cpu_run() {
    while () {
-      $insn = $delay;
 
       if (PRIPS) {
          unless (++$::n & 0xfffff) {
@@ -1136,9 +1132,10 @@ sub cpu_run() {
       }
 
       cpu_pr() if PRCPU;
+      my $insn = $delay;
       $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
       ++$pc;
-      ($insn2sub{$insn} or get_insn())->();
+      ($insn2sub{$insn} or get_insn($insn))->();
    }
 }
 
