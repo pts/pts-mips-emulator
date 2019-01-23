@@ -225,6 +225,8 @@ my $enosys = sub {
    warn "MIPS I Linux emulator: unimplemented syscall $r2\n";
 };
 
+# System call numbers are in the mipso32 column of
+# https://fedora.juszkiewicz.com.pl/syscalls.html
 my @syscall;
 
 ############################################
