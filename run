@@ -30,15 +30,12 @@ BEGIN {
         integer->import();  $use_int32 = 0;  # Works.
       }
    } elsif (((2 ** 15) ** 2 | 0) / 2 ** 15 >= 2 ** 14) {
-      if ($ENV{FORCE_INT32}) {
-        integer->unimport();  $use_int32 = 1;  # Doesn't work yet.
-      } else {
-        die "Perl with 32-bit integers not supported yet";
-      }
+      integer->unimport();  $use_int32 = 1;  # Works.
    } else {
       die "Perl with at least 32-bit integers needed";
    }
 }
+# TODO(pts): Take a closer look at what integer operations can fail.
 # !! `no integer' 32-bit Perl weirdness on i386:
 #    (4294967296 & 4294967295) == 4294967295, should be 0
 #    (42 << 32) == 42, should be 42 * 4294967296
@@ -94,8 +91,9 @@ sub memset($$) {
    for (my $i = $_[0]; $i < $end; ++$i) {
       my $c = vec($_[1], $i - $_[0], 8);
       my $s = (~$i & 3) << 3;
-      my $r = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-      $$r = $$r & ~(0xff << $s) | ($c << $s);
+      my($c0, $c1);
+      my $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+      vec($mem[$c0], $c1, 32) = $t & ~(0xff << $s) | ($c << $s);
    }
 }
 
@@ -823,7 +821,7 @@ sub sys {
 ############################################
 # specials (opcode 0)
 
-my ($s, $t, $i); # "global" for speed
+my ($s, $t, $i, $c0, $c1); # "global" for speed
 
 my @special = ('die "special ". ($insn & 63) . " not supported"') x 64;
 
@@ -1037,21 +1035,21 @@ $opsrc[38] = ' # lwr
 $opsrc[40] = ' # sb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-   $$i = ($$i & ~(M8  << $s)) | (RT & M8 ) << $s;
+   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   vec($mem[$c0], $c1, 32) = ($t & ~(M8  << $s)) | (RT & M8 ) << $s;
 ';
 $opsrc[41] = ' # sh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-   $$i = ($$i & ~(M16 << $s)) | (RT & M16) << $s;
+   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   vec($mem[$c0], $c1, 32) = ($t & ~(M16 << $s)) | (RT & M16) << $s;
 ';
 $opsrc[42] = ' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
-   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swl" if $use_int32 and ($s == 0 or $s == 32);
-   $$i = shl($$i >> $s, $s) | (RT >> (32 - $s));
+   vec($mem[$c0], $c1, 32) = shl($t >> $s, $s) | (RT >> (32 - $s));
 ';
 $opsrc[43] = ' # sw
    $i = RS + IMM;
@@ -1061,9 +1059,9 @@ $opsrc[43] = ' # sw
 $opsrc[46] = ' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
-   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
-   $$i = $$i & (M32 >> $s) | shl(RT, 32 - $s));
+   vec($mem[$c0], $c1, 32) = $t & (M32 >> $s) | shl(RT, 32 - $s));
 ';
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
