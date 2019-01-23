@@ -51,6 +51,9 @@ BEGIN {
 # !! `use integer' 64-bit Perl weirdness:
 #    (1 << 63 >> 63) == -1
 
+# TODO(pts): Use $SIG{...} to propagate signals. Can we invoke the signal
+#            handler any time?
+
 #############################################################################
 # system state
 
@@ -218,11 +221,10 @@ sub mips2omode($) {
 }
 
 my $enosys = sub {
-   warn "unimplemented syscall $r2\n";
-   die;
+   warn "MIPS I Linux emulator: unimplemented syscall $r2\n";
 };
 
-my @syscall = ($enosys) x 7000;
+my @syscall;
 
 ############################################
 
@@ -809,8 +811,8 @@ sub sys {
    ;
 
    #print STDERR "SYSCALL $r2 (@args)\n";
-   $strace = "$r2 (@args)";
-   my $retval = $syscall[$r2](@args);
+   $strace = "$r2 (@args)" if STRACE;
+   my $retval = ($syscall[$r2] or $enosys)->(@args);
    print STDERR "$$ SYS_$strace = $retval\n" if STRACE;
 
    if ($retval > -4096 && $retval < 0) {
