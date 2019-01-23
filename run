@@ -986,105 +986,106 @@ $regimm[17] = '($r31 = $pc << 2), ($pc += IMM - 1) unless RS & 0x80000000'; # bg
 ############################################
 # others
 
-my @opcode;
-
-$opcode[ 0] = sub { $special[$insn & 63] }; # special
-$opcode[ 1] = sub { $regimm[($insn >> 16) & 31] }; # regimm
-$opcode[ 2] = sub { '                 $pc = ($pc & 0x3c000000) | (' . $insn . ' & 0x03ffffff)' }; # j
-$opcode[ 3] = sub { '$r31 = $pc << 2; $pc = ($pc & 0x3c000000) | (' . $insn . ' & 0x03ffffff)' }; # jal
-$opcode[ 4] = sub { '($pc += IMM - 1) if RS == RT' }; # beq beqz b
-$opcode[ 5] = sub { '($pc += IMM - 1) if RS != RT' }; # bne bnez
-$opcode[ 6] = sub { '($pc += IMM - 1) if !RS || RS >= 0x80000000' }; # blez
-$opcode[ 7] = sub { '($pc += IMM - 1) if  RS && RS <  0x80000000' }; # bgtz
-$opcode[ 8] = sub { die "addi instruction unsupported" }; # addi
-$opcode[ 9] = sub { "RT = mask32(RS + IMM)" }; # addiu
-$opcode[10] = sub { 'RT = ((RS - ((RS & B31) * 2))) <  IMM       ' }; # slti
-$opcode[11] = sub { 'RT =   RS                      < (mask32(IMM))' }; # sltiu
-$opcode[12] = sub { 'RT = RS & IMMU' }; # andi
-$opcode[13] = sub { 'RT = RS | IMMU' }; # ori
-$opcode[14] = sub { 'RT = RS ^ IMMU' }; # xori
-$opcode[15] = sub { 'RT = IMMU << 16' }; # lui
-
-$opcode[32] = sub {' # lb
+my @opsrc;
+$opsrc[ 2] = '                 $pc = ($pc & 0x3c000000) | ($insn & 0x03ffffff)'; # j
+$opsrc[ 3] = '$r31 = $pc << 2; $pc = ($pc & 0x3c000000) | ($insn & 0x03ffffff)'; # jal
+$opsrc[ 4] = '($pc += IMM - 1) if RS == RT'; # beq beqz b
+$opsrc[ 5] = '($pc += IMM - 1) if RS != RT'; # bne bnez
+$opsrc[ 6] = '($pc += IMM - 1) if !RS || RS >= 0x80000000'; # blez
+$opsrc[ 7] = '($pc += IMM - 1) if  RS && RS <  0x80000000'; # bgtz
+$opsrc[ 8] = 'die "addi instruction unsupported"'; # addi
+$opsrc[ 9] = 'RT = mask32(RS + IMM)'; # addiu
+$opsrc[10] = 'RT = ((RS - ((RS & B31) * 2))) <  IMM       '; # slti
+$opsrc[11] = 'RT =   RS                      < (mask32(IMM))'; # sltiu
+$opsrc[12] = 'RT = RS & IMMU'; # andi
+$opsrc[13] = 'RT = RS | IMMU'; # ori
+$opsrc[14] = 'RT = RS ^ IMMU'; # xori
+$opsrc[15] = 'RT = IMMU << 16'; # lui
+$opsrc[32] = ' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
    $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
    RT = mask32(($s &  M8) - (($s &  B7) * 2));
-'};
-$opcode[33] = sub {' # lh
+';
+$opsrc[33] = ' # lh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
    $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
    RT = mask32(($s & M16) - (($s & B15) * 2));
-'};
-$opcode[34] = sub {' # lwl
+';
+$opsrc[34] = ' # lwl
    $i = RS + IMM;
    $s = ($i & 3) << 3;
    $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    RT = (RT & (M32 >> (32 - $s))) | (shl($i, $s));
-'};
-$opcode[35] = sub {' # lw
+';
+$opsrc[35] = ' # lw
    $i = RS + IMM;
    RT = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-'};
-$opcode[36] = sub {' # lbu
+';
+$opsrc[36] = ' # lbu
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
    RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M8;
-'};
-$opcode[37] = sub {' # lhu
+';
+$opsrc[37] = ' # lhu
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
    RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M16;
-'};
-$opcode[38] = sub {' # lwr
+';
+$opsrc[38] = ' # lwr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.lwr" if $use_int32 and ($s == 0 or $s == 32);
    RT = shl(RT >> $s, $s) | ($i >> (32 - $s));
-'};
-
-$opcode[40] = sub {' # sb
+';
+$opsrc[40] = ' # sb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
    $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    $$i = ($$i & ~(M8  << $s)) | (RT & M8 ) << $s;
-'};
-$opcode[41] = sub {' # sh
+';
+$opsrc[41] = ' # sh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
    $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    $$i = ($$i & ~(M16 << $s)) | (RT & M16) << $s;
-'};
-$opcode[42] = sub {' # swl
+';
+$opsrc[42] = ' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
    $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swl" if $use_int32 and ($s == 0 or $s == 32);
    $$i = shl($$i >> $s, $s) | (RT >> (32 - $s));
-'};
-$opcode[43] = sub {' # sw
+';
+$opsrc[43] = ' # sw
    $i = RS + IMM;
    vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) = RT;
-'};
+';
 
-$opcode[46] = sub {' # swr
+$opsrc[46] = ' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
    $$i = $$i & (M32 >> $s) | shl(RT, 32 - $s));
-'};
+';
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
 
 sub get_insn() {
    $insn2sub{$insn} ||= do {
       die "nop unexpected here" if !$insn;
-      # TODO(pts): When do we fail with this? Can't use an undefined value as a subroutine reference
-      my $src = &{ $opcode[$insn >> 26] };
+      my $opcode = $insn >> 26;
+      my $src = $opcode > 1 ? $opsrc[$opcode] :
+          $opcode == 0 ? $special[$insn & 63] : $regimm[($insn >> 16) & 31];
+      die sprintf("unknown instruction opcode=%d insn=0x%08x", $opcode, $insn)
+          if !defined($src);
 
+      # TODO(pts): Make this faster by replacing /ge with /g, and precomputing
+      #            these values, e.g. $imm instead of IMM. It's important that
+      #            the `eval' below will see the resulting constants.
       $src =~ s/\bIMM\b/($insn & M16) - (($insn & B15) << 1)/ge; # 16 bit signed immediate
       $src =~ s/\bIMMU\b/$insn & M16/ge;                         # 16 bit unsigned immediate
 
@@ -1095,7 +1096,7 @@ sub get_insn() {
       $src =~ s/\bRD\b/'$r' . (($insn >> 11) & 31)/ge;           # d register
 
       $src =~ s/\$r0 = //g; # optimize away r0 assignments
-      $src =~ s/\$r0\b/0/g; # optimise away r0 access
+      $src =~ s/\$r0\b/(0)/g; # optimise away r0 access
 
       my $cb = eval "sub { $src }" || die "$insn<$src>: $@";
       if (PRCPU) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
