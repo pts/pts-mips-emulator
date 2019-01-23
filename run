@@ -10,8 +10,6 @@ use strict;
 use warnings;
 # Most of $mem[$i] is undef by design, a 0 value is assumed.
 no warnings qw(uninitialized);
-# Perl 5.10 reports lots of ambiguous warnings, e.g. -EBADF.
-no warnings qw(ambiguous);
 #use features qw(...);  # None needed.
 no utf8;
 
@@ -182,8 +180,9 @@ sub O_DIRECT    (){  0x8000 }
 sub O_DIRECTORY (){ 0x10000 }
 sub O_NOATIME   (){ 0x40000 }
 
-sub errno2mips() {
-   $!*1 # wrong, wrong, wrong
+sub errno2mips($) {
+   # TODO(pts): Implement this correctly, `use Errno' etc.
+   $_[0]*1
 }
 
 sub mips2omode($) {
@@ -300,7 +299,7 @@ sub newstat {
       return 0;
    }
 
-   -errno2mips
+   -errno2mips($! + 0)
 };
 
 sub stat64 {
@@ -327,25 +326,25 @@ sub stat64 {
       return 0;
    }
 
-   -errno2mips
+   -errno2mips($! + 0)
 };
 
 sub sys_fcntl {
    my ($fd, $cmd, $arg) = @_;
    strace "fcntl (%d, %x, %x)", $fd, $cmd, $arg;
-   fd_valid $fd or return -EBADF;
+   fd_valid $fd or return -(EBADF);
 
    if ($cmd == 0) { # F_DUPFD
       ++$arg while $fh[$arg];
       open my $fh, "+<&", fileno $fh[$fd]
-         or return -errno2mips;
+         or return -errno2mips($! + 0);
       $fh[$arg] = $fh;
       return $arg;
    } elsif ($cmd == 1) { # F_GETFD
       return fcntl $fh[$fd], Fcntl::F_GETFD, 0;
    } elsif ($cmd == 2) { # F_SETFD
       return +(fcntl $fh[$fd], Fcntl::F_SETFD, $arg+0)
-         ? 0 : -errno2mips;
+         ? 0 : -errno2mips($! + 0);
    } elsif ($cmd == 3) { # F_GETFL
       return O_RDWR; # HACK
    } else {
@@ -353,7 +352,7 @@ sub sys_fcntl {
       warn sprintf"unknown fcntl %d,%x,%x\n", $fd, $cmd, $arg;
    }
 
-   -ENOSYS
+   -(ENOSYS)
 };
 
 ############################################
@@ -366,7 +365,7 @@ $syscall[4002] = sub { # fork
    strace "fork";
 
    my $pid = fork;
-   return -errno2mips unless defined $pid;
+   return -errno2mips($! + 0) unless defined $pid;
    $pid
 };
 $syscall[4003] = sub { # read
@@ -377,7 +376,7 @@ $syscall[4003] = sub { # read
 
    memset $rbuf, $buf;
 
-   defined $count ? $count : -errno2mips
+   defined $count ? $count : -errno2mips($! + 0)
 };
 
 $syscall[4004] = sub { # write
@@ -385,7 +384,7 @@ $syscall[4004] = sub { # write
    strace "write (%d, %x, %d)", $fd, $buf, $count;
 
    $count = syswrite $fh[$fd], memget $buf, $count;
-   defined $count ? $count : -errno2mips
+   defined $count ? $count : -errno2mips($! + 0)
 };
 $syscall[4005] = sub { # open
    my ($path, $flags, $mode) = @_;
@@ -400,18 +399,18 @@ $syscall[4005] = sub { # open
    }
 
    sysopen my $fh, $path, mips2omode $flags, $mode
-      or return -errno2mips;
+      or return -errno2mips($! + 0);
 
    newfd $fh
 };
 $syscall[4006] = sub { # close
    my ($fd) = @_;
    strace "close ($fd)";
-   fd_valid $fd or return -EBADF;
+   fd_valid $fd or return -(EBADF);
 
    undef $dh[$fd];#d#
    (close delete $fh[$fd])
-      ? 0 : -errno2mips
+      ? 0 : -errno2mips($! + 0)
 };
 
 $syscall[4010] = sub { # unlink
@@ -420,7 +419,7 @@ $syscall[4010] = sub { # unlink
    strace "unlink (%s)", $path;
 
    (defined unlink $path)
-      ? 0 : -errno2mips
+      ? 0 : -errno2mips($! + 0)
 };
 $syscall[4011] = sub { # execve
    my ($path, $argv, $envv) = @_;
@@ -450,13 +449,13 @@ $syscall[4011] = sub { # execve
    # not normally printed...
    strace "execve (%s, [%s], [%s])", $path, (join "|", @$argv), (join "|", @$envv);
 
-   -errno2mips
+   -errno2mips($! + 0)
 };
 $syscall[4012] = sub { # chdir
    my $path = memstr $_[0];
    strace "chdir (%s)", $path;
 
-   (chdir $path) ? 0 : -errno2mips
+   (chdir $path) ? 0 : -errno2mips($! + 0)
 };
 $syscall[4013] = sub { # time
    my ($rbuf) = @_;
@@ -485,16 +484,16 @@ $syscall[4037] = sub { # kill
    strace "kill ($_[0], $_[1])";
    
    (kill $_[1], $_[0]) # todo signal numbers?
-      ? 0 : -errno2mips
+      ? 0 : -errno2mips($! + 0)
 };
 
 $syscall[4041] = sub { # dup
    my ($fd) = @_;
    strace "dup ($fd)";
-   fd_valid $fd or return -EBADF;
+   fd_valid $fd or return -(EBADF);
 
    open my $fh, "+<&", fileno $fh[$fd]
-      or return -errno2mips;
+      or return -errno2mips($! + 0);
 
    newfd $fh
 };
@@ -502,7 +501,7 @@ $syscall[4042] = sub { # sysm_pipe
    strace "sysm_pipe ()";
 
    pipe my $r, my $w
-      or return -errno2mips;
+      or return -errno2mips($! + 0);
 
    $r = newfd $r;
    $w = newfd $w;
@@ -528,7 +527,7 @@ $syscall[4050] = sub { strace "getegid ()"; $) };
 $syscall[4054] = sub { # ioctl
    my ($fd, $req, $arg) = @_;
    strace "ioctl (%d, %x, %x)", $fd, $req, $arg;
-   fd_valid $fd or return -EBADF;
+   fd_valid $fd or return -(EBADF);
 
    if ($req == 0x540d) { # TCGETS
       if (-t $fh[$fd]) {
@@ -543,12 +542,12 @@ $syscall[4054] = sub { # ioctl
    } elsif ($req == 0x80047476) { # TIOCSPGRP # irix???
       return 0; # whatever you say...
    } elsif ($req == 0x40087468) { # TIOCGWINSZ
-      return -ENOSYS;
+      return -(ENOSYS);
    } else {
       warn sprintf"unknown ioctl %d,%x,%x\n", $fd, $req, $arg;
    }
 
-   -ENOTTY
+   -(ENOTTY)
 };
 $syscall[4055] = \&sys_fcntl; # fcntl
 
@@ -564,10 +563,10 @@ $syscall[4060] = sub { strace "umask (%o)", $_[0]; umask $_[0] };
 $syscall[4063] = sub { # dup2
    my ($fd1, $fd2) = @_;
    strace "dup2 ($fd1, $fd2)";
-   fd_valid $fd1 or return -EBADF;
+   fd_valid $fd1 or return -(EBADF);
 
    open my $fh, "+<&", fileno $fh[$fd1]
-      or return -errno2mips;
+      or return -errno2mips($! + 0);
 
    $dh[$fd2] = $dh[$fd1];
    $fh[$fd2] = $fh;
@@ -587,7 +586,7 @@ $syscall[4076] = sub { # getrlimit
    my ($resource, $rlim) = @_;
    strace "getrlimit (%d, %x)", $resource, $rlim;
 
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4078] = sub { # gettimeofday
@@ -609,12 +608,12 @@ $syscall[4090] = sub {
    #         fd, off_t, offset)
 
    strace "mips_mmap (%x, %d, %x, %x, %d, %d)", @_;
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4097] = sub { # setpriority
    # ...
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4099] = sub { # statfs
@@ -622,13 +621,13 @@ $syscall[4099] = sub { # statfs
    $path = memstr $path;
    strace "statfs (%s, %x)", $path, $buf;
 
-   -ENOSYS
+   -(ENOSYS)
 };
 $syscall[4100] = sub { # fstatfs
    my ($fd, $buf) = @_;
    strace "fstatfs (%d, %x)", $fd, $buf;
 
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4106] = sub { # newstat
@@ -664,7 +663,7 @@ $syscall[4114] = sub { # wait4
 
    memset $statusbuf, pack "N", $? if $statusbuf;
 
-   $pid >= 0 ? $pid : -errno2mips
+   $pid >= 0 ? $pid : -errno2mips($! + 0)
 };
 
 $syscall[4122] = sub { # newuname
@@ -699,19 +698,19 @@ $syscall[4140] = sub { # llseek
        ($use_int32 ? int($res / 4294967296) : $res >> 32), $res;
 
    defined $res
-      ? 0 : -errno2mips
+      ? 0 : -errno2mips($! + 0)
 };
 
 $syscall[4194] = sub { # sigaction
    my ($signum, $act, $oldact) = @_;
    strace "sigaction (%d, %x, %x)", $signum, $act, $oldact;
-   -ENOSYS
+   -(ENOSYS)
 };
 $syscall[4195] = sub { # sigprocmask
    my ($how, $set, $oldset) = @_;
    strace "sigprocmask ($how, $set, $oldset)";
 
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4203] = sub { # getcwd
@@ -722,7 +721,7 @@ $syscall[4203] = sub { # getcwd
       memset $_[0], "$cwd\x00";
       return 1 + length $cwd;
    } else {
-      return -ERANGE;
+      return -(ERANGE);
    }
 };
 
@@ -775,7 +774,7 @@ $syscall[4283] = sub { # set_thread_area
 
    strace "set_thread_area (%x)", $udesc;
 
-   -ENOSYS
+   -(ENOSYS)
 };
 
 $syscall[4300] = sub { # faccessat
@@ -1267,4 +1266,3 @@ if (0) {
 $::t0 = Time::HiRes::time;
 $::n = 0;
 cpu_run;
-
