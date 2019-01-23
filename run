@@ -684,8 +684,15 @@ $syscall[4122] = sub { # newuname
 $syscall[4140] = sub { # llseek
    my ($fd, $high, $low, $result, $whence) = @_;
    strace "llseek (%d, %x, %08x, %x, %d)", $fd, $high, $low, $result, $whence;
+   # Some systems don't support high-absolute-value 64-bit seek offsets for
+   # sysseek.
+   #
+   # TODO(pts): $use_int32: At least we should check the return value.
+   my $ofs = $low +
+       ($use_int32 ? 4294967296 * ($high - ($high & 2147483648) * 2) :
+       $high << 32);
 
-   my $res = sysseek $fh[$fd], ($high << 32) | $low, $whence;
+   my $res = sysseek $fh[$fd], $ofs, $whence;
 
    memset $result, pack "NN", ($res >> 32), $res;
 
