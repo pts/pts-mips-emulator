@@ -78,7 +78,7 @@ sub mask32($) {
 # !! TODO(pts): Make it faster for $use_int32 (and with mask, then shift).
 # Shift left.
 sub shl($$) {
-   die "bad shift amount\n" if $_[1] < 0 or $_[1] > 31;
+   die "bad shift amount: $_[1]\n" if $_[1] < 0 or $_[1] > 31;
    return $use_int32 ? $_[0] * (2 ** $_[1]) % 4294967296 : ($_[0] << $_[1]) & M32;
 }
 # !! double check ~ (bitwise not)
@@ -1036,8 +1036,8 @@ $opsrc[38] = ' # lwr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-   die "fix.for.\$use_int32.lwr" if $use_int32 and ($s == 0 or $s == 32);
-   RT = shl(RT >> $s, $s) | ($i >> (32 - $s));
+   # TODO(pts): Do the shl part with masking.
+   RT = $s == 32 ? $i : shl(RT >> $s, $s) | ($i >> (32 - $s));
 ';
 $opsrc[40] = ' # sb
    $i = RS + IMM;
@@ -1055,8 +1055,9 @@ $opsrc[42] = ' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
    $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
-   die "fix.for.\$use_int32.swl" if $use_int32 and ($s == 0 or $s == 32);
-   vec($mem[$c0], $c1, 32) = shl($t >> $s, $s) | (RT >> (32 - $s));
+   # TODO(pts): Do the shl part with masking.
+   vec($mem[$c0], $c1, 32) =
+       $s == 32 ? RT : shl($t >> $s, $s) | (RT >> (32 - $s));
 ';
 $opsrc[43] = ' # sw
    $i = RS + IMM;
@@ -1067,9 +1068,12 @@ $opsrc[46] = ' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
-   die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
-   vec($mem[$c0], $c1, 32) = $t & (M32 >> $s) | shl(RT, 32 - $s));
+   # TODO(pts): Do the shl part with masking.
+   vec($mem[$c0], $c1, 32) =
+       $s == 32 ? RT : $t & (M32 >> $s) | shl(RT, 32 - $s);
 ';
+# TODO(pts): eval each opcode once with some default registers, just to check
+# for syntax errors.
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
 
