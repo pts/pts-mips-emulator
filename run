@@ -32,12 +32,12 @@ BEGIN {
    # Detection works with `use integer' and `no integer'.
    if (((2 ** 31) ** 2 | 0) / 2 ** 31 >= 2 ** 30) {
       if ($ENV{FORCE_INT32}) {
-        integer->unimport();  $use_int32 = 1;  # Works.
+        unimport integer; $use_int32 = 1;  # Works.
       } else {
-        integer->import();  $use_int32 = 0;  # Works.
+        import integer;  $use_int32 = 0;  # Works.
       }
    } elsif (((2 ** 15) ** 2 | 0) / 2 ** 15 >= 2 ** 14) {
-      integer->unimport();  $use_int32 = 1;  # Works.
+      unimport integer;  $use_int32 = 1;  # Works.
    } else {
       die "Perl with at least 32-bit integers needed";
    }
@@ -203,9 +203,9 @@ sub mips2omode($) {
 
    my $omode = 0;
 
-   $omode |= Fcntl::O_RDONLY if ($mmode & O_ACCMODE) == O_RDONLY;
-   $omode |= Fcntl::O_WRONLY if ($mmode & O_ACCMODE) == O_WRONLY;
-   $omode |= Fcntl::O_RDWR   if ($mmode & O_ACCMODE) == O_RDWR;
+   $omode |= Fcntl::O_RDONLY() if ($mmode & O_ACCMODE) == O_RDONLY;
+   $omode |= Fcntl::O_WRONLY() if ($mmode & O_ACCMODE) == O_WRONLY;
+   $omode |= Fcntl::O_RDWR()   if ($mmode & O_ACCMODE) == O_RDWR;
 
    for my $mode (qw(
       APPEND SYNC NONBLOCK CREAT TRUNC EXCL NOCTTY
@@ -231,13 +231,13 @@ my @dh; # directory-handles, HACK
 my $strace;
 
 for my $fd (3..9) {
-   open my $fh, "+<&=", $fd
+   open my $fh, "+>&=$fd"
       or next;
 
    $fh[$fd] = $fh;
 }
 for my $fd (0..2) {
-   open my $fh, "+<&", $fd
+   open my $fh, "+>&$fd"
       or next;
 
    $fh[$fd] = $fh;
@@ -279,7 +279,7 @@ sub reify_fds {
       POSIX::dup2 $top + $fd, $fd;
       POSIX::close $top + $fd;
 
-      open my $fh, "+<&=", $fd
+      open my $fh, "+<&=$fd"
         or die;
 
      $fh[$fd] = $fh;
@@ -349,14 +349,14 @@ sub sys_fcntl {
 
    if ($cmd == 0) { # F_DUPFD
       ++$arg while $fh[$arg];
-      open my $fh, "+<&", fileno $fh[$fd]
+      open my $fh, "+<&" . fileno($fh[$fd])
          or return -errno2mips($! + 0);
       $fh[$arg] = $fh;
       return $arg;
    } elsif ($cmd == 1) { # F_GETFD
-      return fcntl $fh[$fd], Fcntl::F_GETFD, 0;
+      return fcntl $fh[$fd], Fcntl::F_GETFD(), 0;
    } elsif ($cmd == 2) { # F_SETFD
-      return +(fcntl $fh[$fd], Fcntl::F_SETFD, $arg+0)
+      return +(fcntl $fh[$fd], Fcntl::F_SETFD(), $arg+0)
          ? 0 : -errno2mips($! + 0);
    } elsif ($cmd == 3) { # F_GETFL
       return O_RDWR; # HACK
@@ -505,7 +505,7 @@ $syscall[4041] = sub { # dup
    strace "dup ($fd)";
    fd_valid $fd or return -(EBADF);
 
-   open my $fh, "+<&", fileno $fh[$fd]
+   open my $fh, "+<&" . fileno($fh[$fd])
       or return -errno2mips($! + 0);
 
    newfd $fh
@@ -578,7 +578,7 @@ $syscall[4063] = sub { # dup2
    strace "dup2 ($fd1, $fd2)";
    fd_valid $fd1 or return -(EBADF);
 
-   open my $fh, "+<&", fileno $fh[$fd1]
+   open my $fh, "+<&" . fileno($fh[$fd1])
       or return -errno2mips($! + 0);
 
    $dh[$fd2] = $dh[$fd1];
