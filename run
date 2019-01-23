@@ -146,28 +146,6 @@ my $insn;
 
 my %insn2src; # insn to perl source
 my %insn2sub; # insn to compiled perl sub
-my %sub2insn; # sub+0 to insn code
-
-{
-   our ($hint_bits, $warning_bits, %hint_hash);
-
-   BEGIN {
-     ($hint_bits, $warning_bits, %hint_hash) = ($^H, ${^WARNING_BITS}, %^H);
-   }
-
-   sub deparse {
-      require B::Deparse;
-      my $deparser = new B::Deparse;
-      $deparser->ambient_pragmas (
-         hint_bits    => $hint_bits,
-         warning_bits => $warning_bits,
-         '$['         => $[+0,
-         integer      => 1,
-         '%^H'        => \%hint_hash,
-      );
-      $deparser->coderef2text ($_[0])
-   }
-}
 
 sub cpu_pr {
    printf " 0 %8x=zr %8x=at %8x=v0 %8x=v1 %8x=a0 %8x=a1 %8x=a2 %8x=a3\n", $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7;
@@ -175,10 +153,13 @@ sub cpu_pr {
    printf "16 %8x=s0 %8x=s1 %8x=s2 %8x=s3 %8x=s4 %8x=s4 %8x=s6 %8x=s6\n", $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23;
    printf "24 %8x=t8 %8x=t9 %8x=k0 %8x=k1 %8x=gp %8x=sp %8x=fp %8x=ra\n", $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31;
 
-   my $code = $sub2insn{$insn+0};
-   my $src  = $insn2src{$code} ||= deparse $insn;
-   $src =~ s/\s+/ /g;
-   printf "%x: %08x (%s)\n", $pc * 4, $code, $src;
+   die "undefined \$insn" if !defined($insn);
+   die "\$insn is a ref: " . ref($insn) if ref($insn);
+   die "\$delay is a ref: " . ref($delay) if ref($delay);
+
+   printf "pc=%8x\n", $pc << 2;
+   printf "insn =%8x: (%s)\n", $insn, $insn2src{$insn};
+   printf "delay=%8x: (%s)\n", $delay, $insn2src{$delay};
 }
 
 ############################################
@@ -862,7 +843,7 @@ $special[ 8] = '               $pc = RS >> 2'; # jr
 $special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
 
 $special[12] = "sys";
-$special[13] = "die sprintf \"BREAK (%08x)\\\n\", $insn"; # break
+$special[13] = "die sprintf \"BREAK (%08x)\\\n\", \$insn"; # break
 
 $special[16] = 'RD = $hi'; # mfhi
 $special[17] = '$hi = RS'; # mthi
@@ -1097,11 +1078,8 @@ $opcode[46] = sub {' # swr
 
 my $NOP = sub { };
 
-sub get_insn {
-   $insn2sub{$_[0]} ||= do {
-      my $old_insn = $insn;#d#
-
-      $insn = $_[0]*1;
+sub get_insn() {
+   $insn2sub{$insn} ||= do {
       # TODO(pts): When do we fail with this? Can't use an undefined value as a subroutine reference
       my $src = &{ $opcode[$insn >> 26] };
 
@@ -1120,10 +1098,7 @@ sub get_insn {
       my $cb = ($insn ? eval "sub { $src }" : $NOP)
          || die "$insn<$src>: $@";
 
-#      $insn2src{$insn} = $src;
-      $sub2insn{$cb+0} = $insn;
-
-      $insn = $old_insn;#d#
+      if (PRCPU) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
 
       $cb
    }
@@ -1144,7 +1119,7 @@ sub cpu_reset($) {
    $r29 = STACK;
    $r31 = 0;
 
-   $delay = $NOP; # start with a nop
+   $delay = 0;  # start with a nop
 }
 
 sub cpu_run() {
@@ -1160,16 +1135,10 @@ sub cpu_run() {
          }
       }
 
-      if (PRCPU) {
-         defined $insn or die "undefined insn access\n";#d#
-         cpu_pr;
-      }
-
+      cpu_pr() if PRCPU;
       $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
-      $delay = ($insn2sub{$delay} or get_insn($delay));
       ++$pc;
-
-      &$insn;
+      ($insn2sub{$insn} or get_insn())->();
    }
 }
 
