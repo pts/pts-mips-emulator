@@ -308,18 +308,18 @@ sub stat64 {
    if (@_) {
       my $stat = pack "N x12 NN NNNNN x12 NN NN NN NN N x4 NN",
          $_[ 0], # dev
-         $_[ 1] >> 32, $_[1], # ino
+         $use_int32 ? int($_[1] / 4294967296) : $_[ 1] >> 32, $_[1], # ino
          $_[ 2], # mode
          $_[ 3], # nlink
          $_[ 4], # uid
          $_[ 5], # gid
          $_[ 6], # rdev
-         $_[ 7] >> 32, $_[7], # size
+         $use_int32 ? int($_[7] / 4294967296) : $_[ 7] >> 32, $_[7], # size
          $_[ 8], 0, # atime
          $_[ 9], 0, # mtime
          $_[10], 0, # ctime
          $_[11],    # blksize
-         $_[12] >> 32, $_[12]; # blocks
+         $use_int32 ? int($_[12] / 4294967296) : $_[12] >> 32, $_[12]; # blocks
 
       memset $buf, $stat;
 
@@ -694,7 +694,8 @@ $syscall[4140] = sub { # llseek
 
    my $res = sysseek $fh[$fd], $ofs, $whence;
 
-   memset $result, pack "NN", ($res >> 32), $res;
+   memset $result, pack "NN",
+       ($use_int32 ? int($res / 4294967296) : $res >> 32), $res;
 
    defined $res
       ? 0 : -errno2mips
@@ -757,7 +758,7 @@ $syscall[4219] = sub { # getdents64
    my $type = 0;
 
    my $entry = pack "NN NN n C Z*",
-      $ino >> 32, $ino,
+      ($use_int32 ? int($ino / 4294967296) : $ino >> 32), $ino,
       0, 0, # offset
       (length $name) + 20,
       $type,
@@ -821,11 +822,11 @@ $special[ 0] = "RD = (RT                       << SA       ) & M32"; # sll
 
 $special[ 2] = 'RD =  RT                       >> SA              '; # srl
 
-$special[ 3] = 'RD = ((RT - ((RT & B31) << 1)) >> SA       ) & M32'; # sra
-$special[ 4] = 'RD =  (RT                      << (RS & 31)) & M32'; # sllv
+$special[ 3] = 'die "fix.for.\$use_int32.sra" if $use_int32 and RT < 0; RD = ((RT - ((RT & B31) * 2)) >> SA       ) & M32'; # sra
+$special[ 4] = 'RD =  (RT                     << (RS & 31)) & M32'; # sllv
 
-$special[ 6] = 'RD =   RT                      >> (RS & 31)       '; # srlv
-$special[ 7] = 'RD = ((RT - ((RT & B31) << 1)) >> (RS & 31)) & M32'; # srav
+$special[ 6] = 'RD =   RT                     >> (RS & 31)       '; # srlv
+$special[ 7] = 'die "fix.for.\$use_int32.srav" if $use_int32 and RT < 0; RD = ((RT - ((RT & B31) * 2)) >> (RS & 31)) & M32'; # srav
 $special[ 8] = '               $pc = RS >> 2'; # jr
 $special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
 
@@ -953,7 +954,7 @@ $special[37] = "RD =  RS | RT       "; # or
 $special[38] = "RD =  RS ^ RT       "; # xor
 $special[39] = "RD = (RS ^ RT) ^ M32"; # nor
 
-$special[42] = "RD = (RS - ((RS & B31) << 1)) < (RT - ((RT & B31) << 1))"; # slt
+$special[42] = "RD = (RS - ((RS & B31) * 2)) < (RT - ((RT & B31) * 2))"; # slt
 $special[43] = "RD =  RS                      <  RT                     "; # sltu
 
 ############################################
@@ -981,8 +982,8 @@ $opcode[ 6] = sub { '($pc += IMM - 1) if !RS || RS >= 0x80000000' }; # blez
 $opcode[ 7] = sub { '($pc += IMM - 1) if  RS && RS <  0x80000000' }; # bgtz
 $opcode[ 8] = sub { die "addi instruction unsupported" }; # addi
 $opcode[ 9] = sub { "RT = (RS + IMM) & M32" }; # addiu
-$opcode[10] = sub { 'RT = ((RS - ((RS & B31) << 1))) <  IMM       ' }; # slti
-$opcode[11] = sub { 'RT =   RS                       < (IMM & M32)' }; # sltiu
+$opcode[10] = sub { 'RT = ((RS - ((RS & B31) * 2))) <  IMM       ' }; # slti
+$opcode[11] = sub { 'RT =   RS                      < (IMM & M32)' }; # sltiu
 $opcode[12] = sub { 'RT = RS & IMMU' }; # andi
 $opcode[13] = sub { 'RT = RS | IMMU' }; # ori
 $opcode[14] = sub { 'RT = RS ^ IMMU' }; # xori
@@ -992,13 +993,13 @@ $opcode[32] = sub {' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
    $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
-   RT = (($s &  M8) - (($s &  B7) << 1)) & M32;
+   RT = (($s &  M8) - (($s &  B7) * 2)) & M32;
 '};
 $opcode[33] = sub {' # lh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
    $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
-   RT = (($s & M16) - (($s & B15) << 1)) & M32;
+   RT = (($s & M16) - (($s & B15) * 2)) & M32;
 '};
 $opcode[34] = sub {' # lwl
    $i = RS + IMM;
@@ -1024,6 +1025,7 @@ $opcode[38] = sub {' # lwr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $i = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   die "fix.for.\$use_int32.lwr" if $use_int32 and ($s == 0 or $s == 32);
    RT = (RT >> $s << $s) | ($i >> (32 - $s));
 '};
 
@@ -1043,6 +1045,7 @@ $opcode[42] = sub {' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
    $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   die "fix.for.\$use_int32.swl" if $use_int32 and ($s == 0 or $s == 32);
    $$i = ($$i >> $s << $s) | (RT >> (32 - $s));
 '};
 $opcode[43] = sub {' # sw
@@ -1054,6 +1057,7 @@ $opcode[46] = sub {' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
    $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
    $$i = $$i & (M32 >> $s) | ((RT << (32 - $s)) & M32);
 '};
 
