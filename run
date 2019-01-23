@@ -1135,6 +1135,7 @@ sub cpu_run() {
       my $insn = $delay;
       $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
       ++$pc;
+      die "pc overflow" if $pc > 0x3fffffff;
       ($insn2sub{$insn} or get_insn($insn))->();
    }
 }
