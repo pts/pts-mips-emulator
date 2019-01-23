@@ -5,6 +5,7 @@
 sub STRACE (){ 0 }
 sub PRCPU  (){ 0 }
 sub PRIPS  (){ 0 }
+sub PRDIFF (){ 0 }
 
 use strict;
 use warnings;
@@ -133,14 +134,11 @@ sub mem_reset() {
 
 ############################################
 
-my ($pc, $hi, $lo, $delay); # cpu state
-
-my (
-   $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7 ,
-   $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15,
-   $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23,
-   $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31,
-);
+my ($pc, $hi, $lo, $delay,  # cpu state
+    $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7 ,
+    $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15,
+    $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23,
+    $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31);
 
 my %insn2src; # insn to perl source
 $insn2src{0} = '#nop';
@@ -805,7 +803,7 @@ sub sys {
       vec($mem[($r29 + 28) >> ADDR_SHIFT], (($r29 + 28) >> 2) & ADDR_MASK, 32),
    ;
 
-   #print STDERR "!! SYSCALL $r2 (@args)\n";
+   #print STDERR "SYSCALL $r2 (@args)\n";
    $strace = "$r2 (@args)";
    my $retval = $syscall[$r2](@args);
    print STDERR "$$ SYS_$strace = $retval\n" if STRACE;
@@ -855,7 +853,7 @@ if ($use_int32) {
    # It is doing https://en.wikipedia.org/wiki/IEEE_754 64-bit float
    # (double) arithmetics with 53-bit significand, thus it's OK to multiply
    # a 16-bit and a 32-bit unsigned integer.
-   $special[24] =  '# mult
+   $special[24] =  '# mult RS RT;
       if (RS <= 2147483647 and RT <= 2147483648 and ($s = RS * RT) <= 9007199254740991) {  # Shortcut.
          $lo = $s % 4294967296;
          $hi = ($s - $lo) / 4294967296;
@@ -885,7 +883,7 @@ if ($use_int32) {
       }
       #printf STDERR "CALL mult(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
       ';
-   $special[25] = ' # multu
+   $special[25] = ' # multu RS RT;
       $s = RS * RT;
       if ($s <= 9007199254740991) {  # Shortcut.
          $lo = $s % 4294967296;
@@ -903,7 +901,7 @@ if ($use_int32) {
       }
       #printf STDERR "CALL multu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
       ';
-   $special[26] = ' # div
+   $special[26] = ' # div RS RT;
       $s = RS - ((RS & B31) * 2);
       $t = RT - ((RT & B31) * 2)
          or return;
@@ -915,27 +913,27 @@ if ($use_int32) {
       $hi = mask32($hi);
       #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[27] = ' # divu
+   $special[27] = ' # divu RS RT;
       RT or return;
       $hi = RS % RT;
       $lo = (RS - $hi) / RT;
       #printf STDERR "CALL divu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
 } else {
-   $special[24] =  '# mult 64-bit
+   $special[24] =  '# mult RS RT;64
       $lo = (RS - ((RS & B31) << 1))
           * (RT - ((RT & B31) << 1));
       $hi = ($lo >> 32) & M32;
       $lo &= M32;
       #printf STDERR "CALL mult(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[25] = ' # multu 64-bit
+   $special[25] = ' # multu RS RT;64
       $lo = RS * RT;
       $hi = ($lo >> 32) & M32;
       $lo &= M32;
       #printf STDERR "CALL multu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[26] = ' # div 64-bit
+   $special[26] = ' # div RS RT;64
       $s = RS - ((RS & B31) << 1);
       $t = RT - ((RT & B31) << 1)
          or return;
@@ -944,7 +942,7 @@ if ($use_int32) {
       $hi = ($s % $t) & M32;
       #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[27] = ' # divu 64-bit
+   $special[27] = ' # divu RS RT;64
       RT or return;
 
       $lo = RS / RT;
@@ -1096,7 +1094,7 @@ sub get_insn($) {
       $src =~ s/\$r0\b/(0)/g; # optimise away r0 access
 
       my $cb = eval "sub { $src }" || die "$insn<$src>: $@";
-      if (PRCPU) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
+      if (PRCPU or PRDIFF) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
       $cb
    }
 }
@@ -1119,24 +1117,83 @@ sub cpu_reset($) {
    $delay = 0;  # start with a nop
 }
 
-sub cpu_run() {
-   while () {
+sub get_state() {
+   ([@mem], $pc, $hi, $lo, $delay,  # cpu state
+    $r0 , $r1 , $r2 , $r3 , $r4 , $r5 , $r6 , $r7 ,
+    $r8 , $r9 , $r10, $r11, $r12, $r13, $r14, $r15,
+    $r16, $r17, $r18, $r19, $r20, $r21, $r22, $r23,
+    $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31)
+}
 
-      if (PRIPS) {
-         unless (++$::n & 0xfffff) {
-            no integer;
-            open my $tty, ">/dev/tty";
-            printf {$tty} "%g ips\n", $::n / (Time::HiRes::time - $::t0);
-            $::n = 0; $::t0 = Time::HiRes::time;#d#
+sub diff_state($$$) {
+  my($st0, $st1, $insn) = @_;
+  my @d;
+  if ($st0->[1] != $st1->[1]) { push @d, sprintf("pc=0x%08x", $st1->[1] >> 2) }
+  if ($st0->[2] != $st1->[2]) { push @d, sprintf("hi=0x%08x", $st1->[2]) }
+  if ($st0->[3] != $st1->[3]) { push @d, sprintf("lo=0x%08x", $st1->[3]) }
+  if ($st0->[4] != $st1->[4]) { push @d, sprintf("delay=0x%08x", $st1->[4]) }
+  for (my $i = 0; $i < 31; ++$i) {
+    if ($st0->[5 + $i] != $st1->[5 + $i]) { push @d, sprintf("r$i=0x%08x", $st1->[5 + $i]) }
+  }
+  my $pgc0 = @{$st0->[0]};
+  my $pgc1 = @{$st1->[0]};
+  my $pgc = $pgc0 > $pgc1 ? $pgc0 : $pgc1;
+  for (my $pgi = 0; $pgi <= $pgc; ++$pgi) {
+    next if !defined($st0->[0][$pgi]) and !defined($st1->[0][$pgi]);
+    my $pg0 = \$st0->[0][$pgi];
+    my $pg1 = \$st1->[0][$pgi];
+    if ($$pg0 ne $$pg1) {
+      push @d, sprintf("pg0x%x", $pgi);
+      my $size = ((length($$pg0) > length($$pg1) ? length($$pg0) : length($$pg1)) + 3) >> 2;
+      for (my $i = 0; $i < $size; ++$i) {
+        my $v0 = vec($$pg0, $i, 32);
+        my $v1 = vec($$pg1, $i, 32);
+        push @d, sprintf("mem0x%08x=%08x", $pgi << 16 | $i << 2, $v1) if $v0 != $v1;
+      }
+    }
+  }
+  push @d, 'none' if !@d;
+  my $src = $insn2src{$insn};
+  $src =~ s@\A(# *(?:mult|multu|div|divu) [^;]*;).*@$1@s;
+  "DIFF: $src: @d\n"
+}
+
+if (!PRIPS && !PRCPU && !PRDIFF) {
+   *::cpu_run = sub {  # Shortcut for nondebug mode.
+      while () {
+         my $insn = $delay;
+         $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+         ++$pc;
+         die "pc overflow" if $pc > 0x3fffffff;
+         ($insn2sub{$insn} or get_insn($insn))->();
+      }
+   }
+} else {
+   *::cpu_run = sub {
+      while () {
+         if (PRIPS) {
+            unless (++$::n & 0xfffff) {
+               no integer;
+               open my $tty, ">/dev/tty";
+               printf {$tty} "%g ips\n", $::n / (Time::HiRes::time - $::t0);
+               $::n = 0; $::t0 = Time::HiRes::time;#d#
+            }
+         }
+
+         cpu_pr() if PRCPU;
+         my $insn = $delay;
+         $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+         ++$pc;
+         die "pc overflow" if $pc > 0x3fffffff;
+         if (PRDIFF) {
+           my @st0 = get_state();
+           ($insn2sub{$insn} or get_insn($insn))->();
+           my @st1 = get_state();
+           print STDERR diff_state(\@st0, \@st1, $insn);
+         } else {
+           ($insn2sub{$insn} or get_insn($insn))->();
          }
       }
-
-      cpu_pr() if PRCPU;
-      my $insn = $delay;
-      $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
-      ++$pc;
-      die "pc overflow" if $pc > 0x3fffffff;
-      ($insn2sub{$insn} or get_insn($insn))->();
    }
 }
 
@@ -1265,4 +1322,4 @@ if (0) {
 
 $::t0 = Time::HiRes::time;
 $::n = 0;
-cpu_run;
+cpu_run();
