@@ -87,27 +87,26 @@ sub xxd($) {
 
 sub memset($$) {
    die "memset too early" if $_[0] < 0;
-   die "memset too long" if $_[0] + length($_[1]) > 4294967296;
+   my $end = $_[0] + length($_[1]);
+   die "memset too long" if $end > 4294967296;
 
-   for (0 .. (length $_[1]) - 1) {
-      my $i = $_[0] + $_;
-      my $c = unpack "C", substr $_[1], $_, 1;
-
+   for (my $i = $_[0]; $i < $end; ++$i) {
+      my $c = vec($_[1], $i - $_[0], 8);
       my $s = (~$i & 3) << 3;
-      $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-      $$i = $$i & ~(0xff << $s) | ($c << $s);
+      my $r = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+      $$r = $$r & ~(0xff << $s) | ($c << $s);
    }
 }
 
 sub memget($$) {
    die "memget too early" if $_[0] < 0 or $_[1] < 0;
-   die "memget too long" if $_[0] + $_[1] > 4294967296;
-
-   my $r;
-
-   for my $i ($_[0] .. $_[0] + $_[1] - 1) {
+   my $end = $_[0] + $_[1];
+   die "memget too long" if $end > 4294967296;
+   my $r = "";
+   # TODO(pts): Replace memset, memget, memstr and mips_exec with faster code.
+   for (my $i = $_[0]; $i < $end; ++$i) {
       my $s = (~$i & 3) << 3;
-      $r .= pack "C", ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff);
+      vec($r, $i - $_[0], 8) = ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff);
    }
 
    $r
@@ -115,13 +114,13 @@ sub memget($$) {
 
 sub memstr($) {
    die "memstr too early" if $_[0] < 0;
-   die "memset too long" if $_[0] > 4294967295;
+   die "memstr too long" if $_[0] > 4294967295;
    my $r;
 
    for (my $i = $_[0]; ; ++$i) {
-      die "memset too long" if $i > 4294967295;
+      die "memstrt too long" if $i > 4294967295;
       my $s = (~$i & 3) << 3;
-      $r .= pack "C", ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff)
+      vec($r, $i - $_[0], 8) = ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff)
                       || last;
    }
 
@@ -1216,7 +1215,7 @@ sub mips_exec($$;$$) {
    my $phents;
    die "read phents: $!" if 0x20 * $phnum !=
        (read($file, $phents, 0x20 * $phnum) or 0);
-   for my $phi (0 .. $phnum - 1) {
+   for (my $phi = 0; $phi < $phnum; ++$phi) {
       my ($type, $offset, $vaddr, $physaddr, $size, $memsz, $flags, $align) =
          unpack "N*", substr($phents, 0x20 * $phi, 0x20);
 
@@ -1233,7 +1232,8 @@ sub mips_exec($$;$$) {
          my $toread = $size < 65536 ? $size : 65536;
          # TODO(pts): Read smaller chunks.
          die "read: $!" if $toread != (read($file, $data, $toread) or 0);
-         for my $o (0 .. ($toread >> 2) - 1) {
+         my $toread2 = $toread >> 2;
+         for (my $o = 0; $o < $toread2; ++$o) {
             my $w = vec($data, $o, 32);
             my $i = $vaddr + $o * 4;
             #printf "LOAD %08x = %08x\n", $i, $w;
