@@ -15,6 +15,7 @@ pts-mips-emulator has been tested and found working with:
 
 * Perl 5.10.1 (i386, 32-bit integers)
 * Perl 5.14.2 (i386, 64-bit integers)
+* Perl 5.18.2 (amd64, 64-bit integers)
 * Perl 5.24.1 (amd64, 64-bit integers)
 
 using the following command line:
