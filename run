@@ -1056,6 +1056,14 @@ sub mips_exec($$;$$) {
    my $base_ofs = tell($file);
    die "seek: $!" if !seek($file, $base_ofs, 0);
    die "read: $!" if 0x32 != (read($file, $elf_header, 0x32) or 0);
+   if ($elf_header =~ m@\A#!.*perl@s) {
+     die "read: $!" if !defined(read($file, $elf_header, 131022, 0x32));
+     my $i = index($elf_header, "\n_"."_"."DATA"."_"."_\n");
+     if ($i > 0) {
+       $elf_header = substr($elf_header, $i += 10, 0x32);
+       $base_ofs += $i;
+     }
+   }
 
    # 32 bit, msb, elf version
    "\x7fELF\x01\x02\x01" eq substr $elf_header, 0, 7
