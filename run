@@ -696,13 +696,13 @@ $syscall[4122] = sub { # newuname
    strace "newuname (%x)", $buf;
 
    memset $buf, pack "a65 a65 a65 a65 a65 a65", #d#
-      "sysname",
+      "Linux",  # "sysname",
       "nodename",
-      "release",
-      "version",
-      "machine",
-      "domainname";
-
+      "2.6.32.71-emulator",  # "release",
+      "#emulator",  # "version",
+      "mips",  # "machine",
+      "(none)",  # "domainname"
+      ;
    0
 };
 
