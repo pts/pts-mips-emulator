@@ -38,6 +38,13 @@ BEGIN {
       die "Perl with at least 32-bit integers needed";
    }
 }
+# !! `no integer' 32-bit Perl weirdness on i386:
+#    (4294967296 & 4294967295) == 4294967295, should be 0
+#    (42 << 32) == 42, should be 42 * 4294967296
+#    (5 << 31) == 2147483648, should be 5 * 2147483648
+#    good: (1 << 31 >> 31) == 1
+# !! `use integer' 64-bit Perl weirdness:
+#    (1 << 63 >> 63) == -1
 
 #############################################################################
 # system state
@@ -55,6 +62,13 @@ sub M16       (){     0xffff }
 sub B15       (){     0x8000 }
 sub M8        (){       0xff }
 sub B7        (){       0x80 }
+
+# !! TODO(pts): Make it faster for !$use_int32.
+# $_[0] can be any number between -2**53 and 2**53. The return value is
+# between 0 and 4294967295.
+sub mask32($) {
+  return $use_int32 ? $_[0] % 4294967296 : $_[0] & M32;
+}
 
 my @mem; # [16bits][14bits] = 32bits
 
@@ -795,6 +809,7 @@ sub sys {
       vec($mem[($r29 + 28) >> ADDR_SHIFT], (($r29 + 28) >> 2) & ADDR_MASK, 32),
    ;
 
+   #print STDERR "!! SYSCALL $r2 (@args)\n";
    $strace = "$r2 (@args)";
    my $retval = $syscall[$r2](@args);
    print STDERR "$$ SYS_$strace = $retval\n" if STRACE;
@@ -818,15 +833,15 @@ my ($s, $t, $i); # "global" for speed
 
 my @special = ('die "special ", $insn & 63, " not supported"') x 64;
 
-$special[ 0] = "RD = (RT                       << SA       ) & M32"; # sll
+$special[ 0] = "RD = mask32(RT                       << SA       )"; # sll
 
 $special[ 2] = 'RD =  RT                       >> SA              '; # srl
 
-$special[ 3] = 'die "fix.for.\$use_int32.sra" if $use_int32 and RT < 0; RD = ((RT - ((RT & B31) * 2)) >> SA       ) & M32'; # sra
-$special[ 4] = 'RD =  (RT                     << (RS & 31)) & M32'; # sllv
+$special[ 3] = 'die "fix.for.\$use_int32.sra" if $use_int32 and RT < 0; RD = mask32((RT - ((RT & B31) * 2)) >> SA       )'; # sra
+$special[ 4] = 'RD =  mask32(RT                     << (RS & 31))'; # sllv
 
 $special[ 6] = 'RD =   RT                     >> (RS & 31)       '; # srlv
-$special[ 7] = 'die "fix.for.\$use_int32.srav" if $use_int32 and RT < 0; RD = ((RT - ((RT & B31) * 2)) >> (RS & 31)) & M32'; # srav
+$special[ 7] = 'die "fix.for.\$use_int32.srav" if $use_int32 and RT < 0; RD = mask32((RT - ((RT & B31) * 2)) >> (RS & 31))'; # srav
 $special[ 8] = '               $pc = RS >> 2'; # jr
 $special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
 
@@ -900,8 +915,8 @@ if ($use_int32) {
       # Sign of the remainder ($hi) would be the sign of $s with use integer.
       $hi = $s % $t;
       $hi -= $t if $hi and (($s > 0 and $t < 0) or ($s < 0 and $t > 0));
-      $lo = (($s - $hi) / $t) & M32;
-      $hi = $hi & M32;
+      $lo = mask32(($s - $hi) / $t);
+      $hi = mask32($hi);
       #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
    $special[27] = ' # divu
@@ -911,20 +926,20 @@ if ($use_int32) {
       #printf STDERR "CALL divu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
 } else {
-   $special[24] =  '# mult
+   $special[24] =  '# mult 64-bit
       $lo = (RS - ((RS & B31) << 1))
           * (RT - ((RT & B31) << 1));
       $hi = ($lo >> 32) & M32;
       $lo &= M32;
       #printf STDERR "CALL mult(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[25] = ' # multu
+   $special[25] = ' # multu 64-bit
       $lo = RS * RT;
       $hi = ($lo >> 32) & M32;
       $lo &= M32;
       #printf STDERR "CALL multu(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[26] = ' # div
+   $special[26] = ' # div 64-bit
       $s = RS - ((RS & B31) << 1);
       $t = RT - ((RT & B31) << 1)
          or return;
@@ -933,7 +948,7 @@ if ($use_int32) {
       $hi = ($s % $t) & M32;
       #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
-   $special[27] = ' # divu
+   $special[27] = ' # divu 64-bit
       RT or return;
 
       $lo = RS / RT;
@@ -943,9 +958,9 @@ if ($use_int32) {
 }
 
 $special[32] = 'die "add instruction unsupported"';
-$special[33] = "RD = (RS + RT) & M32"; # addu
+$special[33] = "RD = mask32(RS + RT)"; # addu
 $special[34] = 'die "sub instruction unsupported"';
-$special[35] = "RD = (RS - RT) & M32"; # subu
+$special[35] = "RD = mask32(RS - RT)"; # subu
 #$special[32] = $special[33]; # add # buggy, does not trap #d#
 #$special[34] = $special[35]; # sub # buggy, does not trap #d#
 
@@ -955,7 +970,7 @@ $special[38] = "RD =  RS ^ RT       "; # xor
 $special[39] = "RD = (RS ^ RT) ^ M32"; # nor
 
 $special[42] = "RD = (RS - ((RS & B31) * 2)) < (RT - ((RT & B31) * 2))"; # slt
-$special[43] = "RD =  RS                      <  RT                     "; # sltu
+$special[43] = "RD =  RS                     <  RT                    "; # sltu
 
 ############################################
 # regimm (opcode 1)
@@ -981,9 +996,9 @@ $opcode[ 5] = sub { '($pc += IMM - 1) if RS != RT' }; # bne bnez
 $opcode[ 6] = sub { '($pc += IMM - 1) if !RS || RS >= 0x80000000' }; # blez
 $opcode[ 7] = sub { '($pc += IMM - 1) if  RS && RS <  0x80000000' }; # bgtz
 $opcode[ 8] = sub { die "addi instruction unsupported" }; # addi
-$opcode[ 9] = sub { "RT = (RS + IMM) & M32" }; # addiu
+$opcode[ 9] = sub { "RT = mask32(RS + IMM)" }; # addiu
 $opcode[10] = sub { 'RT = ((RS - ((RS & B31) * 2))) <  IMM       ' }; # slti
-$opcode[11] = sub { 'RT =   RS                      < (IMM & M32)' }; # sltiu
+$opcode[11] = sub { 'RT =   RS                      < (mask32(IMM))' }; # sltiu
 $opcode[12] = sub { 'RT = RS & IMMU' }; # andi
 $opcode[13] = sub { 'RT = RS | IMMU' }; # ori
 $opcode[14] = sub { 'RT = RS ^ IMMU' }; # xori
@@ -993,19 +1008,19 @@ $opcode[32] = sub {' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
    $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
-   RT = (($s &  M8) - (($s &  B7) * 2)) & M32;
+   RT = mask32(($s &  M8) - (($s &  B7) * 2));
 '};
 $opcode[33] = sub {' # lh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
    $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
-   RT = (($s & M16) - (($s & B15) * 2)) & M32;
+   RT = mask32(($s & M16) - (($s & B15) * 2));
 '};
 $opcode[34] = sub {' # lwl
    $i = RS + IMM;
    $s = ($i & 3) << 3;
    $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
-   RT = (RT & (M32 >> (32 - $s))) | ($i << $s & M32);
+   RT = (RT & (M32 >> (32 - $s))) | (mask32($i << $s));
 '};
 $opcode[35] = sub {' # lw
    $i = RS + IMM;
@@ -1058,7 +1073,7 @@ $opcode[46] = sub {' # swr
    $s = (($i & 3) + 1) << 3;
    $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
-   $$i = $$i & (M32 >> $s) | ((RT << (32 - $s)) & M32);
+   $$i = $$i & (M32 >> $s) | (mask32(RT << (32 - $s)));
 '};
 
 # 0x7c03e83b rdhwr $3, $29 ($29=tls)- emulated by kernel normally, for thread support
