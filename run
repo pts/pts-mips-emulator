@@ -8,6 +8,7 @@ sub PRIPS  (){ 0 }
 
 use strict;
 use warnings;
+# Most of $mem[$i] is undef by design, a 0 value is assumed.
 no warnings qw(uninitialized);
 # Perl 5.10 reports lots of ambiguous warnings, e.g. -EBADF.
 no warnings qw(ambiguous);
@@ -70,7 +71,7 @@ sub memset($$) {
       my $c = unpack "C", substr $_[1], $_, 1;
 
       my $s = (~$i & 3) << 3;
-      $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+      $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
       $$i = $$i & ~(0xff << $s) | ($c << $s);
    }
 }
@@ -80,7 +81,7 @@ sub memget($$) {
 
    for my $i ($_[0] .. $_[0] + $_[1] - 1) {
       my $s = (~$i & 3) << 3;
-      $r .= pack "C", (($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & 0xff);
+      $r .= pack "C", ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff);
    }
 
    $r
@@ -91,7 +92,7 @@ sub memstr($) {
 
    for (my $i = $_[0]; ; ++$i) {
       my $s = (~$i & 3) << 3;
-      $r .= pack "C", (($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & 0xff)
+      $r .= pack "C", ((vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & 0xff)
                       || last;
    }
 
@@ -786,13 +787,13 @@ $syscall[4300] = sub { # faccessat
 };
 
 sub sys {
-   my @args =  map $_*1,
+   my @args =  map $_*1,  # TODO(pts): Any faster than *1?
       $r4, $r5, $r6, $r7, # first four args in regs
       # extra arguments on stack
-      $mem[($r29 + 16) >> ADDR_SHIFT][(($r29 + 16) >> 2) & ADDR_MASK],
-      $mem[($r29 + 20) >> ADDR_SHIFT][(($r29 + 20) >> 2) & ADDR_MASK],
-      $mem[($r29 + 24) >> ADDR_SHIFT][(($r29 + 24) >> 2) & ADDR_MASK],
-      $mem[($r29 + 28) >> ADDR_SHIFT][(($r29 + 28) >> 2) & ADDR_MASK],
+      vec($mem[($r29 + 16) >> ADDR_SHIFT], (($r29 + 16) >> 2) & ADDR_MASK, 32),
+      vec($mem[($r29 + 20) >> ADDR_SHIFT], (($r29 + 20) >> 2) & ADDR_MASK, 32),
+      vec($mem[($r29 + 24) >> ADDR_SHIFT], (($r29 + 24) >> 2) & ADDR_MASK, 32),
+      vec($mem[($r29 + 28) >> ADDR_SHIFT], (($r29 + 28) >> 2) & ADDR_MASK, 32),
    ;
 
    $strace = "$r2 (@args)";
@@ -992,39 +993,39 @@ $opcode[15] = sub { 'RT = IMMU << 16' }; # lui
 $opcode[32] = sub {' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
+   $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
    RT = (($s &  M8) - (($s &  B7) * 2)) & M32;
 '};
 $opcode[33] = sub {' # lh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   $s = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s;
+   $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
    RT = (($s & M16) - (($s & B15) * 2)) & M32;
 '};
 $opcode[34] = sub {' # lwl
    $i = RS + IMM;
    $s = ($i & 3) << 3;
-   $i = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    RT = (RT & (M32 >> (32 - $s))) | ($i << $s & M32);
 '};
 $opcode[35] = sub {' # lw
    $i = RS + IMM;
-   RT = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   RT = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
 '};
 $opcode[36] = sub {' # lbu
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   RT = ($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & M8;
+   RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M8;
 '};
 $opcode[37] = sub {' # lhu
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   RT = ($mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] >> $s) & M16;
+   RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M16;
 '};
 $opcode[38] = sub {' # lwr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
-   $i = $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.lwr" if $use_int32 and ($s == 0 or $s == 32);
    RT = (RT >> $s << $s) | ($i >> (32 - $s));
 '};
@@ -1032,31 +1033,31 @@ $opcode[38] = sub {' # lwr
 $opcode[40] = sub {' # sb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    $$i = ($$i & ~(M8  << $s)) | (RT & M8 ) << $s;
 '};
 $opcode[41] = sub {' # sh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    $$i = ($$i & ~(M16 << $s)) | (RT & M16) << $s;
 '};
 $opcode[42] = sub {' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
-   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swl" if $use_int32 and ($s == 0 or $s == 32);
    $$i = ($$i >> $s << $s) | (RT >> (32 - $s));
 '};
 $opcode[43] = sub {' # sw
    $i = RS + IMM;
-   $mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK] = RT;
+   vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) = RT;
 '};
 
 $opcode[46] = sub {' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
-   $i = \$mem[$i >> ADDR_SHIFT][($i >> 2) & ADDR_MASK];
+   $i = \vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
    die "fix.for.\$use_int32.swr" if $use_int32 and ($s == 0 or $s == 32);
    $$i = $$i & (M32 >> $s) | ((RT << (32 - $s)) & M32);
 '};
@@ -1133,12 +1134,8 @@ sub cpu_run() {
          cpu_pr;
       }
 
-      $delay = $mem[$pc >> (ADDR_SHIFT - 2)][$pc & ADDR_MASK];
-      unless (ref $delay) {
-         $delay =
-         $mem[$pc >> (ADDR_SHIFT - 2)][$pc & ADDR_MASK] =
-            get_insn $delay;
-      }
+      $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+      $delay = ($insn2sub{$delay} or get_insn($delay));
       ++$pc;
 
       &$insn;
@@ -1187,9 +1184,9 @@ sub mips_exec($$;$$) {
    my $phents;
    die "read phents: $!" if 0x20 * $phnum !=
        (read($file, $phents, 0x20 * $phnum) or 0);
-   for my $i (0 .. $phnum - 1) {
+   for my $phi (0 .. $phnum - 1) {
       my ($type, $offset, $vaddr, $physaddr, $size, $memsz, $flags, $align) =
-         unpack "N*", substr($phents, 0x20 * $i, 0x20);
+         unpack "N*", substr($phents, 0x20 * $phi, 0x20);
 
       $type != 2
          or die "dynamic loading is not supported";
@@ -1206,9 +1203,9 @@ sub mips_exec($$;$$) {
          die "read: $!" if $toread != (read($file, $data, $toread) or 0);
          for my $o (0 .. ($toread >> 2) - 1) {
             my $w = vec($data, $o, 32);
-            my $a = $vaddr + $o * 4;
-            #printf "LOAD %08x = %08x\n", $a, $w;
-            $mem[$a >> ADDR_SHIFT][($a >> 2) & ADDR_MASK] = $w;
+            my $i = $vaddr + $o * 4;
+            #printf "LOAD %08x = %08x\n", $i, $w;
+            vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) = $w;
          }
          $size -= $toread; $offset += $toread; $vaddr += $toread;
       }
