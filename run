@@ -6,6 +6,7 @@ sub STRACE (){ 0 }
 sub PRCPU  (){ 0 }
 sub PRIPS  (){ 0 }
 sub PRDIFF (){ 0 }
+sub DETSYS (){ 0 }  # Make some system calls deterministic.
 
 use strict;
 use warnings;
@@ -484,12 +485,17 @@ $syscall[4013] = sub { # time
    my ($rbuf) = @_;
    strace "time (%x)", $rbuf;
 
-   my $time = time;
+   my $time = DETSYS ? 2000000000 : time;
 
    memset $rbuf, pack "N", $time;
    $time
 };
 
+$syscall[4020] = sub {
+   strace "getpid ()";
+   return 44 if DETSYS;
+   $$
+};
 $syscall[4020] = sub { strace "getpid ()"; $$ };
 
 $syscall[4024] = sub { strace "getuid ()"; $< };
@@ -576,7 +582,7 @@ $syscall[4055] = \&sys_fcntl; # fcntl
 
 $syscall[4057] = sub { # getpgid
    strace "getpgid ($_[0])";
-
+   return 44 if DETSYS;
    $_[0] == $$
       ? getpgrp : $$ # hacky, but it's a bsd'ism
 };
@@ -596,8 +602,16 @@ $syscall[4063] = sub { # dup2
    $fd2
 };
 
-$syscall[4064] = sub { strace "getppid ()"; getppid };
-$syscall[4065] = sub { strace "getpgrp ()"; getpgrp };
+$syscall[4064] = sub {
+   strace "getppid ()";
+   return 43 if DETSYS;
+   getppid
+};
+$syscall[4065] = sub {
+   strace "getpgrp ()";
+   return 43 if DETSYS;
+   getpgrp
+};
 
 $syscall[4075] = sub { # setrlimit
    my ($resource, $rlim) = @_;
@@ -616,7 +630,7 @@ $syscall[4078] = sub { # gettimeofday
    my ($tv, $tz) = @_;
    strace "gettimeofday (%x, %x)", $tv, $tz;
 
-   my ($s, $m) = Time::HiRes::gettimeofday;
+   my ($s, $m) = DETSYS ? (2000000000, 0) : Time::HiRes::gettimeofday;
    memset $tv, pack "NN", $s, $m if $tv;
    memset $tz, pack "NN", 0, 0 if $tz; # minuteswest, dsttime
 
@@ -746,6 +760,11 @@ $syscall[4195] = sub { # sigprocmask
 };
 
 $syscall[4203] = sub { # getcwd
+   if (DETSYS) {
+      return -(ERANGE) if 1 >= $_[1];
+      memset $_[0], "/\x00";
+      return 2;
+   }
    my $cwd = Cwd::getcwd;
    strace "getcwd (%x, %d)", $_[0], $_[1];
 
@@ -1338,6 +1357,11 @@ if (0) {
       $file = $ARGV[0];
    }
 
+   # !! TODO(pts): Fix bash.run being unable to find the current directory in
+   # Perl 5.004 in %ENV = () here:
+   # shell-init: error retrieving current directory: getcwd: cannot access parent directories: Function not implemented
+   # sh_makepath: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory
+   %ENV = () if DETSYS;
    mips_exec $file, \@ARGV, [map "$_=$ENV{$_}", keys %ENV];
 }
 
