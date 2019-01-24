@@ -517,8 +517,7 @@ $syscall[4011] = sub { # execve
    }
 
    local %ENV;
-   /([^=]*)=(.*)/s, $ENV{$1} = $2
-      for @$envv;
+   for (@$envv) { $ENV{$1} = $2 if /([^=]*)=(.*)/s }
 
    ($path, $argv->[0]) = ($argv->[0], $path);
 
@@ -1386,15 +1385,14 @@ sub mips_exec($$;$$) {
       };
 
       $add_int->(scalar @$argv);
-      $add_str->($_) for @$argv;
+      for (@$argv) { $add_str->($_) }
       $add_int->(0);
 
-      $add_str->($_) for @$envv;
+      for (@$envv) { $add_str->($_) }
       $add_int->(0);
 
       # auxv
-      $add_int->($_->[0]), $add_int->($_->[1])
-         for @$auxv;
+      for (@$auxv) { $add_int->($_->[0]), $add_int->($_->[1]) }
 
       $add_int->(0);
       $add_int->(0);
