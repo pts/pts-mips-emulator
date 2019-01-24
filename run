@@ -387,6 +387,7 @@ sub newstat {
    my $buf = shift;
 
    if (@_) {
+      my $blocks = ($_[12] or 0);  # Perl 5.004 may have an empty string here.
       my $stat = pack "N x12 NNNNN x8 N x4 NN NN NN N N x56",
          $_[ 0], # dev
          $_[ 1], # ino
@@ -399,8 +400,8 @@ sub newstat {
          $_[ 8], 0, # atime
          $_[ 9], 0, # mtime
          $_[10], 0, # ctime
-         $_[11], # blksize
-         $_[12]; # blocks
+         ($_[11] or 0), # blksize
+         $blocks; # blocks
 
       memset $buf, $stat;
 
@@ -414,6 +415,7 @@ sub stat64 {
    my $buf = shift;
 
    if (@_) {
+      my $blocks = ($_[12] or 0);  # Perl 5.004 may have an empty string here.
       my $stat = pack "N x12 NN NNNNN x12 NN NN NN NN N x4 NN",
          $_[ 0], # dev
          $use_int32 ? int($_[1] / 4294967296) : $_[ 1] >> 32, $_[1], # ino
@@ -426,8 +428,8 @@ sub stat64 {
          $_[ 8], 0, # atime
          $_[ 9], 0, # mtime
          $_[10], 0, # ctime
-         $_[11],    # blksize
-         $use_int32 ? int($_[12] / 4294967296) : $_[12] >> 32, $_[12]; # blocks
+         ($_[11] or 0), # blksize
+         $use_int32 ? int($blocks / 4294967296) : $blocks >> 32, $blocks; # blocks
 
       memset $buf, $stat;
 
