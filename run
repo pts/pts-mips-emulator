@@ -194,7 +194,7 @@ sub memset($$) {
       my $ia = $i >> ADDR_SHIFT;
       my $im = $i & ADDR4_MASK;
       $mem[$ia] = "" if !defined($mem[$ia]);
-      $mem[$ia] .= "\0" x ($im - length($mem[$ia]));
+      $mem[$ia] .= "\0" x ($im - length($mem[$ia])) if $im > length($mem[$ia]);
       substr($mem[$ia], $im, $j - $i) = substr($_[1], $i - $_[0], $j - $i);
       $i = $j;
    }
