@@ -1142,6 +1142,8 @@ $opsrc[12] = 'RT = RS & IMMU'; # andi
 $opsrc[13] = 'RT = RS | IMMU'; # ori
 $opsrc[14] = 'RT = RS ^ IMMU'; # xori
 $opsrc[15] = 'RT = IMMU << 16'; # lui
+# $opsrc[17] would contain FPU (floating point) instructions, see
+# https://en.wikipedia.org/wiki/MIPS_architecture#FPU_instructions .
 $opsrc[32] = ' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
@@ -1452,7 +1454,6 @@ sub mips_exec($$$;$$) {
    my $subarch = ($flags >> 28) & 15;
    my @subarchs = qw(MIPS-I MIPS-II MIPS-III MIPS-IV MIPS-V MIPS32r1 MIPS64r1
                      MIPS32r2 MIPS64r2 MIPS32r6 MIPS64r6 11 12 13 14 15);
-   # TODO(pts): What is the difference between MIPS-I, MIPS32r2 and MIPS R3000?
    die "MIPS subarchitecture $subarchs[$subarch] not supported: $path\n" if
        $subarch; 
 

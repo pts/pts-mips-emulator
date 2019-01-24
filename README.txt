@@ -36,4 +36,27 @@ The shells also work interactively:
   $ PS1=', ' perl ./run bash.run --norc
   , exit
 
+pts-mips-emulator implements a subset of the 32-bit MIPS-I instruction set
+architecture (ISA), see
+https://en.wikipedia.org/wiki/MIPS_architecture#MIPS_I introduced in 1985
+with the R2000 processor, and also implemented by the R3000 processor
+introduced in 1998. pts-mips-emulator doesn't implement floating point
+instructions or the comprocessor (and some other instructions are also
+missing). Some more details:
+
+* MIPS-I is is big endian (MSB-first) and it's 32-bit.
+* There are many architectures named MIPS, e.g. for 32-bit: MIPS-I, MIPS-II,
+  MIPS-III, MIPS-IV, MIPS-V, MIPS32r1, ... MIPS32r6, microMIPS32r3 ...
+  microMIPS32r6. For 64 bits: MIPS64r1 ... MIPS64r6, microMIPS64r3 ...
+  microMIPS64r6. There are also application-specific extensions (ASE) for
+  many of these, e.g. MIPS16e2. Some of these architectures are backwards
+  compatible to each other, but most of them are not. Thus pts-mipus-emulator
+  implements MIPS-I only, and nothing else.
+* More details about MIPS architectures here:
+  https://en.wikipedia.org/wiki/MIPS_architecture#MIPS_I .
+* The corresponding Linux uname(2) machine type is mips, but that's confusing,
+  because it includes MIPS-II, MIPS32r2, MIPS64r2 etc. There different Linux
+  system call numbers assigned to 32-bit and 64-bit MIPS:
+  https://fedora.juszkiewicz.com.pl/syscalls.html .
+
 __END__
