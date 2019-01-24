@@ -548,6 +548,18 @@ $syscall[4011] = sub { # execve
       }
    }
 
+   my $fh = open_mips_executable($path);
+   if (defined($fh)) {
+      # TODO(pts): Close file descriptors with O_CLOEXEC set (with F_GETFD).
+      #
+      # TODO(pts): Better error handling: if mips_exec fails early (without
+      # the cpu_reset and mem_reset etc.), then we should return an error
+      # code here.
+      mips_exec($fh, $path, $argv, $envv);
+      # `sub sys' will set $r2 to 0 (same as cpu_reset) and $r7 to 0 (harmless).
+      return 0;
+   }
+
    local %ENV;
    for (@$envv) { $ENV{$1} = $2 if /([^=]*)=(.*)/s }
 
@@ -1365,30 +1377,62 @@ if (!PRIPS && !PRCPU && !PRDIFF) {  # Hot path for non-debug mode.
 
 #############################################################################
 
-sub mips_exec($$;$$) {
-   my ($path, $argv, $envv, $auxv) = @_;
+# Returns a new filehandle or undef on error.
+sub open_mips_executable($) {
+   my $path = $_[0];
+   my $path2 = $path =~ m@\A\s@ ? "./$path" : $path;
+   my $fh;
+   return undef if !my_open($fh, "< $path2");
+   my $elf_header;
+   if (0x32 != (read($fh, $elf_header, 0x32) or 0)) { ERROR:
+      my $e = $! + 0; close($fh); $! = $e; return undef;
+   }
+   if ($elf_header =~ m@\A#!.*perl@s) {
+     goto ERROR if !defined(read($fh, $elf_header, 131022, 0x32));
+     my $i = index($elf_header, "\n_"."_"."DATA"."_"."_\n");
+     $elf_header = substr($elf_header, $i += 10, 0x32) if $i > 0;
+   }
+   my ($magic, $class, $endianness, $ident_version, $osabi, $abiversion, $pad,
+       $type, $machine, $elf_version, $entry, $phoff, $unused_shoff,
+       $flags, $unused_ehsize, $phentsize, $phnum,
+      ) = unpack("a4CCCCCa7nnNNNNNnnn", $elf_header);
+   my $subarch = ($flags >> 28) & 15;
+   # This needs to match mips_exec.
+   if ($magic ne "\x7fELF" or $class != 1 or $endianness != 2 or
+       $ident_version != 1 or ($osabi != 0 and $osabi != 3) or
+       $abiversion != 0 or $type != 2 or $machine != 8 or $elf_version != 1 or
+       $subarch != 0) {
+      close($fh);
+      $! = 8;  # ENOEXEC on Linux. TODO(pts): Match it with $!{ENOEXEC} etc.
+      return undef
+   }
+   goto ERROR if !seek($fh, 0, 0);
+   $fh
+}
+
+sub mips_exec($$$;$$) {
+   my ($fh, $path, $argv, $envv, $auxv) = @_;
 
    mem_reset;
 
-   my $file = $path;
-   if (ref $path ne 'GLOB') {
-     undef $file;
-     # Escape filename for Perl 5.004_04.
-     my $path2 = $path =~ m@\A\s@ ? "./$path" : $path;
-     die "open $path: $!" if !my_open($file, "< $path2");
+   if (!defined($fh)) {
+      # Escape filename for Perl 5.004_04.
+      # TODO(pts): Do this with 3-arg my_open.
+      my $path2 = $path =~ m@\A\s@ ? "./$path" : $path;
+      die "open $path: $!" if !my_open($fh, "< $path2");
    }
 
    my $elf_header;
-   my $base_ofs = tell($file);
-   die "seek: $!" if !seek($file, $base_ofs, 0);
-   die "read: $!" if 0x32 != (read($file, $elf_header, 0x32) or 0);
+   my $base_ofs = tell($fh);
+   die "seek: $!" if !seek($fh, $base_ofs, 0);
+   die "read: $!" if 0x32 != (read($fh, $elf_header, 0x32) or 0);
    if ($elf_header =~ m@\A#!.*perl@s) {
-     die "read: $!" if !defined(read($file, $elf_header, 131022, 0x32));
-     my $i = index($elf_header, "\n_"."_"."DATA"."_"."_\n");
-     if ($i > 0) {
-       $elf_header = substr($elf_header, $i += 10, 0x32);
-       $base_ofs += $i;
-     }
+      die "read: $!" if !defined(read($fh, $elf_header, 131022, 0x32));
+      my $i = index($elf_header, "\n_"."_"."DATA"."_"."_\n");
+      if ($i > 0) {
+         $elf_header = substr($elf_header, $i += 10, 0x32);
+         $base_ofs += $i;
+      }
    }
 
    # 32 bit, msb, elf version
@@ -1396,26 +1440,26 @@ sub mips_exec($$;$$) {
        $type, $machine, $elf_version, $entry, $phoff, $unused_shoff,
        $flags, $unused_ehsize, $phentsize, $phnum,
       ) = unpack("a4CCCCCa7nnNNNNNnnn", $elf_header);
-   die "ELF expected: $ARGV[0]\n" if $magic ne "\x7fELF";
-   die "32-bit ELF expected: $ARGV[0]\n" if $class != 1;
-   die "bind endian (MSB-first) ELF expected: $ARGV[0]\n" if $endianness != 2;
-   die "ELF ident version 1 expected: $ARGV[0]\n" if $ident_version != 1;
-   die "Linux ELF expected: $ARGV[0]\n" if $osabi != 0 and $osabi != 3;
-   die "ELF ABI version 0 expected: $ARGV[0]\n" if $abiversion != 0;
-   die "ELF executable expected: $ARGV[0]\n" if $type != 2;
-   die "MIPS expected: $ARGV[0]\n" if $machine != 8;
-   die "ELF version 1 expected: $ARGV[0]\n" if $elf_version != 1;
+   die "ELF expected: $path\n" if $magic ne "\x7fELF";
+   die "32-bit ELF expected: $path\n" if $class != 1;
+   die "bind endian (MSB-first) ELF expected: $path\n" if $endianness != 2;
+   die "ELF ident version 1 expected: $path\n" if $ident_version != 1;
+   die "Linux ELF expected: $path\n" if $osabi != 0 and $osabi != 3;
+   die "ELF ABI version 0 expected: $path\n" if $abiversion != 0;
+   die "ELF executable expected: $path\n" if $type != 2;
+   die "MIPS expected: $path\n" if $machine != 8;
+   die "ELF version 1 expected: $path\n" if $elf_version != 1;
    my $subarch = ($flags >> 28) & 15;
    my @subarchs = qw(MIPS-I MIPS-II MIPS-III MIPS-IV MIPS-V MIPS32r1 MIPS64r1
                      MIPS32r2 MIPS64r2 MIPS32r6 MIPS64r6 11 12 13 14 15);
    # TODO(pts): What is the difference between MIPS-I, MIPS32r2 and MIPS R3000?
-   die "MIPS subarchitecture $subarchs[$subarch] not supported: $ARGV[0]\n" if
+   die "MIPS subarchitecture $subarchs[$subarch] not supported: $path\n" if
        $subarch; 
 
-   die "seek: $!" if !seek($file, $phoff + $base_ofs, 0);
+   die "seek: $!" if !seek($fh, $phoff + $base_ofs, 0);
    my $phents;
    die "read phents: $!" if 0x20 * $phnum !=
-       (read($file, $phents, 0x20 * $phnum) or 0);
+       (read($fh, $phents, 0x20 * $phnum) or 0);
    for (my $phi = 0; $phi < $phnum; ++$phi) {
       my ($type, $offset, $vaddr, $physaddr, $size, $memsz, $flags, $align) =
          unpack "N*", substr($phents, 0x20 * $phi, 0x20);
@@ -1426,16 +1470,17 @@ sub mips_exec($$;$$) {
       next unless $type == 1;
       next unless $size;
 
-      die "seek: $!" if !seek($file, $offset + $base_ofs, 0);
+      die "seek: $!" if !seek($fh, $offset + $base_ofs, 0);
       my $data;
       $size = ($size + 3) & ~3;
       while ($size > 0) {
          my $toread = $size < 65536 ? $size : 65536;
-         die "read: $!" if $toread != (read($file, $data, $toread) or 0);
+         die "read: $!" if $toread != (read($fh, $data, $toread) or 0);
          memset $vaddr, $data;
          $vaddr += $toread; $size -= $toread;
       }
    }
+   close($fh);
 
    cpu_reset $entry;
 
@@ -1477,13 +1522,13 @@ if (0) {
       [map "$_=$ENV{$_}", keys %ENV];
 } else {
 
-   my $file;
+   my ($fh, $path);
    if (defined(fileno(DATA))) {
       die "binmode: $!" if !binmode(DATA);
-      $file = \*DATA;
-      unshift @ARGV, $0;
+      $fh = \*DATA;
+      unshift @ARGV, $path = $0;
    } else {
-      $file = $ARGV[0];
+      $path = $ARGV[0];
    }
 
    # !! TODO(pts): Fix bash.run being unable to find the current directory in
@@ -1491,7 +1536,7 @@ if (0) {
    # shell-init: error retrieving current directory: getcwd: cannot access parent directories: Function not implemented
    # sh_makepath: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory
    %ENV = () if DETSYS;
-   mips_exec $file, \@ARGV, [map "$_=$ENV{$_}", keys %ENV];
+   mips_exec $fh, $path, \@ARGV, [map "$_=$ENV{$_}", keys %ENV];
 }
 
 $::t0 = Time::HiRes::time;
