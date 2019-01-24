@@ -1370,8 +1370,8 @@ sub mips_exec($$;$$) {
    if (ref $path ne 'GLOB') {
      undef $file;
      # Escape filename for Perl 5.004_04.
-     my $path2 = $path =~ m@\A[\s&]@ ? "./$path" : $path;
-     die "open $path: $!" if !my_open($file, "<$path2");
+     my $path2 = $path =~ m@\A\s@ ? "./$path" : $path;
+     die "open $path: $!" if !my_open($file, "< $path2");
    }
 
    my $elf_header;
