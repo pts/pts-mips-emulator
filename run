@@ -493,7 +493,7 @@ $syscall[4004] = sub { # write
    my ($fd, $buf, $count) = @_;
    strace "write (%d, %x, %d)", $fd, $buf, $count;
 
-   $count = syswrite $fh[$fd], memget $buf, $count;
+   $count = syswrite $fh[$fd], memget($buf, $count), $count;
    defined $count ? $count : -errno2mips($! + 0)
 };
 $syscall[4005] = sub { # open
