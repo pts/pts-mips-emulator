@@ -15,6 +15,46 @@ no warnings qw(uninitialized);
 #use features qw(...);  # None needed.
 no utf8;
 
+# genfh is a helper function for filehandle symbol generation.
+#sub genfh;  # No prototype, can't predict prototype of \&Symbol::gensym.
+sub my_open($$);
+sub my_sysopen($$$$);
+sub my_opendir($$);
+BEGIN {
+   if ($] >= 5.006) {
+      *::genfh = sub {};
+      *::my_open = sub ($$) { open($_[0], $_[1]) };
+      *::my_sysopen = sub ($$$$) { sysopen($_[0], $_[1], $_[2], $_[3]) };
+      *::my_opendir = sub ($$) { opendir($_[0], $_[1]) };
+   } else {
+      eval { require Symbol };
+      die "Symbol::gensym not found" if !defined(&Symbol::gensym);
+      *::genfh = \&Symbol::gensym;
+      my $fhsym;
+      *::my_open = sub ($$) {
+         open($_[0], $_[1]) if defined($_[0]);
+         $fhsym = genfh() if !defined($fhsym);
+         my $result = open($fhsym, $_[1]);
+         $_[0] = $fhsym, $fhsym = undef if $result;
+         $result
+      };
+      *::my_sysopen = sub ($$$$) {
+         sysopen($_[0], $_[1], $_[2], $_[3]) if defined($_[0]);
+         $fhsym = genfh() if !defined($fhsym);
+         my $result = sysopen($fhsym, $_[1], $_[2], $_[3]);
+         $_[0] = $fhsym, $fhsym = undef if $result;
+         $result
+      };
+      *::my_opendir = sub ($$) {
+         opendir($_[0], $_[1]) if defined($_[0]);
+         $fhsym = genfh() if !defined($fhsym);
+         my $result = opendir($fhsym, $_[1]);
+         $_[0] = $fhsym, $fhsym = undef if $result;
+         $result
+      };
+   }
+}
+
 BEGIN {
    eval { require Time::HiRes };
    # Debian woody doesn't have `apt-get install libtime-hires-perl' by default,
@@ -241,19 +281,17 @@ my @fh;
 my @dh; # directory-handles, HACK
 my $strace;
 
-for my $fd (3..9) {
-   open my $fh, "+>&=$fd"
-      or next;
 
-   $fh[$fd] = $fh;
+{
+   for my $fd (3..9) {
+      my_open(my $fh, "+>&=$fd") or next;
+      $fh[$fd] = $fh;
+   }
+   for my $fd (0..2) {
+      my_open(my $fh, "+>&$fd") or next;
+      $fh[$fd] = $fh;
+   }
 }
-for my $fd (0..2) {
-   open my $fh, "+>&$fd"
-      or next;
-
-   $fh[$fd] = $fh;
-}
-
 sub fd_valid($) {
    !($_[0] & ~65535)
    && $fh[$_[0]]
@@ -268,7 +306,7 @@ sub strace($;@) {
 }
 
 sub newfd($) {
-   my $fd;
+   my $fd = 0;
    ++$fd while $fh[$fd];
    $fh[$fd] = $_[0];
    $fd
@@ -290,7 +328,7 @@ sub reify_fds {
       POSIX::dup2 $top + $fd, $fd;
       POSIX::close $top + $fd;
 
-      open my $fh, "+<&=$fd"
+      my_open my $fh, "+<&=$fd"
         or die;
 
      $fh[$fd] = $fh;
@@ -360,7 +398,7 @@ sub sys_fcntl {
 
    if ($cmd == 0) { # F_DUPFD
       ++$arg while $fh[$arg];
-      open my $fh, "+<&" . fileno($fh[$fd])
+      my_open my $fh, "+<&" . fileno($fh[$fd])
          or return -errno2mips($! + 0);
       $fh[$arg] = $fh;
       return $arg;
@@ -415,14 +453,14 @@ $syscall[4005] = sub { # open
    $path = memstr $path;
    strace "open (%s, %x, %o)", $path, $flags, $mode;
 
-   if (opendir my $dh, $path) {#d#
-      open my $fh, "</dev/null"or die;
+   if (my_opendir my $dh, $path) {#d#
+      my_open my $fh, "</dev/null"or die;
       my $fd = newfd $fh;
       $dh[$fd] = $dh;
       return $fd;
    }
 
-   sysopen my $fh, $path, mips2omode $flags, $mode
+   my_sysopen my $fh, $path, mips2omode $flags, $mode
       or return -errno2mips($! + 0);
 
    newfd $fh
@@ -521,7 +559,7 @@ $syscall[4041] = sub { # dup
    strace "dup ($fd)";
    fd_valid $fd or return -(EBADF);
 
-   open my $fh, "+<&" . fileno($fh[$fd])
+   my_open my $fh, "+<&" . fileno($fh[$fd])
       or return -errno2mips($! + 0);
 
    newfd $fh
@@ -594,7 +632,7 @@ $syscall[4063] = sub { # dup2
    strace "dup2 ($fd1, $fd2)";
    fd_valid $fd1 or return -(EBADF);
 
-   open my $fh, "+<&" . fileno($fh[$fd1])
+   my_open my $fh, "+<&" . fileno($fh[$fd1])
       or return -errno2mips($! + 0);
 
    $dh[$fd2] = $dh[$fd1];
@@ -1221,7 +1259,7 @@ if (!PRIPS && !PRCPU && !PRDIFF) {
          if (PRIPS) {
             unless (++$::n & 0xfffff) {
                no integer;
-               open my $tty, ">/dev/tty";
+               my_open my $tty, ">/dev/tty";
                printf {$tty} "%g ips\n", $::n / (Time::HiRes::time - $::t0);
                $::n = 0; $::t0 = Time::HiRes::time;#d#
             }
@@ -1254,7 +1292,9 @@ sub mips_exec($$;$$) {
    my $file = $path;
    if (ref $path ne 'GLOB') {
      undef $file;
-     die "open $path: $!" if !open($file, "<", $path);
+     # Escape filename for Perl 5.004_04.
+     my $path2 = $path =~ m@\A[\s&]@ ? "./$path" : $path;
+     die "open $path: $!" if !my_open($file, "<$path2");
    }
 
    my $elf_header;
