@@ -554,8 +554,12 @@ $syscall[4011] = sub { # execve
    ($path, $argv->[0]) = ($argv->[0], $path);
 
    reify_fds;
-     
-   die "unexpected success from exec" if exec {$path} @$argv;
+
+   {
+      # exec shouldn't display a warning if it fails.
+      BEGIN { $^W = 0; eval { unimport warnings } }
+      die "unexpected success from exec" if exec {$path} @$argv;
+   };
 
    # not normally printed...
    strace "execve (%s, [%s], [%s])", $path, (join "|", @$argv), (join "|", @$envv);
