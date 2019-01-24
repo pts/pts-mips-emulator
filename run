@@ -103,6 +103,7 @@ BEGIN {
       die "Perl with at least 32-bit integers needed";
    }
 }
+
 # TODO(pts): Take a closer look at what integer operations can fail.
 # !! `no integer' 32-bit Perl weirdness on i386:
 #    (4294967296 & 4294967295) == 4294967295, should be 0
@@ -134,27 +135,53 @@ sub B15       (){     0x8000 }
 sub M8        (){       0xff }
 sub B7        (){       0x80 }
 
+my $mask_mode;
 # !! TODO(pts): Make it faster for !$use_int32.
 # $_[0] can be any number between -2**53 and 2**53. The return value is
 # between 0 and 4294967295.
-sub mask32($) {
-   return $use_int32 ? $_[0] % 4294967296 : $_[0] & M32;
-}
+sub mask32($);
+# Shift left.
 # !! TODO(pts): Make it faster for !$use_int32.
 # !! TODO(pts): Make it faster for $use_int32 (and with mask, then shift).
-# Shift left.
-sub shl($$) {
-   die "bad shift amount: $_[1]\n" if $_[1] < 0 or $_[1] > 31;
-   return $use_int32 ? $_[0] * (2 ** $_[1]) % 4294967296 : ($_[0] << $_[1]) & M32;
+sub shl($$);
+BEGIN {
+   if ((4294968000 | 0) == 704) {
+      $mask_mode = 0;
+      # Fast solution to truncate to unsigned 32 bits in Perl 5.004_04. Also
+      # `$_[0] % 4294967296' doesn't work, it's equivalent to `$_[0] % 0'.
+      *::mask32 = sub ($) { $_[0] | 0 };
+      # !! TODO(pts): Make it faster.
+      *::shl = sub ($$) { ($_[0] * (2 ** $_[1])) | 0 };
+   } elsif ($use_int32) {
+      $mask_mode = 1;
+      *::mask32 = sub ($) { $_[0] % 4294967296 };
+      # !! TODO(pts): Make it faster.
+      *::shl = sub ($$) { ($_[0] * (2 ** $_[1])) % 4294967296 };
+   } else {
+      $mask_mode = 2;
+      *::mask32 = sub ($) { $_[0] & M32 };
+      *::shl = sub ($$) { ($_[0] << $_[1]) & M32 };
+   }
+   # !! TODO(pts): Double check that ~ (bitwise not) works correctly.
 }
-# !! double check ~ (bitwise not)
+
+my $loadi_or0;
+BEGIN {
+   # We need to test for -1.0, because in Perl 5.6.1: 4294967295 == -1, even
+   # if `no integer' is active.
+   if (vec("\xff\xff\xff\xff", 0, 32) == -1.0) {
+      # vec returns a nonnegative 32-bit integer, except that in Perl 5.004_04
+      # it can return negative values. We'll use `| 0' to fix it.
+      die "unsupported vec and or behavior" if
+          (4294968000 | 0) != 704 or (-1 | 0) != 4294967295;
+      $loadi_or0 = " | 0";
+   } else {
+      # " | 0" also works here, but it is slower.
+      $loadi_or0 = "";
+   }
+}
 
 my @mem; # [16bits][14bits] = 32bits
-
-sub xxd($) {
-   open my $fh, "| xxd" or die;
-   print $fh $_[0];
-}
 
 sub memset($$) {
    die "memset too early" if $_[0] < 0;
@@ -227,7 +254,7 @@ sub cpu_pr() {
    printf "24 %8x=t8 %8x=t9 %8x=k0 %8x=k1 %8x=gp %8x=sp %8x=fp %8x=ra\n", $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31;
    printf "   %8x=pc %8x=lo %8x=hi\n", $pc << 2, $lo, $hi;
    printf "delay=%8x: (%s)\n", $delay, (get_insn($delay) and $insn2src{$delay});
-   my $nextinsn = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+   my $nextinsn = vec($mem[$pc >> (ADDR2_SHIFT)], $pc & ADDR_MASK, 32) | 0;
    printf "nextinsn=%8x: (%s)\n", $nextinsn, (get_insn($nextinsn) and $insn2src{$nextinsn});
 }
 
@@ -896,10 +923,10 @@ sub sys {
    my @args =  map $_*1,  # TODO(pts): Any faster than *1?
       $r4, $r5, $r6, $r7, # first four args in regs
       # extra arguments on stack
-      vec($mem[($r29 + 16) >> ADDR_SHIFT], (($r29 + 16) >> 2) & ADDR_MASK, 32),
-      vec($mem[($r29 + 20) >> ADDR_SHIFT], (($r29 + 20) >> 2) & ADDR_MASK, 32),
-      vec($mem[($r29 + 24) >> ADDR_SHIFT], (($r29 + 24) >> 2) & ADDR_MASK, 32),
-      vec($mem[($r29 + 28) >> ADDR_SHIFT], (($r29 + 28) >> 2) & ADDR_MASK, 32),
+      vec($mem[($r29 + 16) >> ADDR_SHIFT], (($r29 + 16) >> 2) & ADDR_MASK, 32) | 0,
+      vec($mem[($r29 + 20) >> ADDR_SHIFT], (($r29 + 20) >> 2) & ADDR_MASK, 32) | 0,
+      vec($mem[($r29 + 24) >> ADDR_SHIFT], (($r29 + 24) >> 2) & ADDR_MASK, 32) | 0,
+      vec($mem[($r29 + 28) >> ADDR_SHIFT], (($r29 + 28) >> 2) & ADDR_MASK, 32) | 0,
    ;
 
    #print STDERR "SYSCALL $r2 (@args)\n";
@@ -928,13 +955,13 @@ my @special = ('die "special ". ($insn & 63) . " not supported"') x 64;
 
 $special[ 0] = "RD = shl(RT, SA)"; # sll
 
-$special[ 2] = 'RD =  RT                       >> SA              '; # srl
+$special[ 2] = 'RD =  RT                       >> SA             '; # srl
 
-$special[ 3] = 'die "fix.for.\$use_int32.sra" if $use_int32 and RT < 0; RD = mask32((RT - ((RT & B31) * 2)) >> SA       )'; # sra
+$special[ 3] = 'RD = MASK32[(RT - ((RT & B31) * 2)) >> SA       ]'; # sra
 $special[ 4] = 'RD =  shl(RT, (RS & 31))'; # sllv
 
 $special[ 6] = 'RD =   RT                     >> (RS & 31)       '; # srlv
-$special[ 7] = 'die "fix.for.\$use_int32.srav" if $use_int32 and RT < 0; RD = mask32((RT - ((RT & B31) * 2)) >> (RS & 31))'; # srav
+$special[ 7] = 'RD = MASK32[(RT - ((RT & B31) * 2)) >> (RS & 31)]'; # srav
 $special[ 8] = '               $pc = RS >> 2'; # jr
 $special[ 9] = 'RD = $pc << 2; $pc = RS >> 2'; # jalr
 
@@ -954,7 +981,7 @@ if ($use_int32) {
    # a 16-bit and a 32-bit unsigned integer.
    $special[24] =  '# mult RS RT;
       if (RS <= 2147483647 and RT <= 2147483648 and ($s = RS * RT) <= 9007199254740991) {  # Shortcut.
-         $lo = $s % 4294967296;
+         $lo = MASK32[$s];
          $hi = ($s - $lo) / 4294967296;
       } else {  # TODO(pts): Can we do it any shorter?
          $s = RS;
@@ -965,10 +992,10 @@ if ($use_int32) {
          $lo = $s % 65536;
          $hi = ($s - $lo) / 65536 * $t;
          $lo *= $t;
-         $t = $hi % 65536;
+         $t = MASK16[$hi];
          $lo += $t * 65536;
          $hi = ($hi - $t) / 65536;
-         $t = $lo % 4294967296;
+         $t = MASK32[$lo];
          $hi += ($lo - $t) / 4294967296;
          $lo = $t;
          if ($sign < 0) {
@@ -985,16 +1012,16 @@ if ($use_int32) {
    $special[25] = ' # multu RS RT;
       $s = RS * RT;
       if ($s <= 9007199254740991) {  # Shortcut.
-         $lo = $s % 4294967296;
+         $lo = MASK32[$s];
          $hi = ($s - $lo) / 4294967296;
       } else {
          $lo = RS % 65536;
          $hi = (RS - $lo) / 65536 * RT;
          $lo *= RT;
-         $t = $hi % 65536;
+         $t = MASK16[$hi];
          $lo += $t * 65536;
          $hi = ($hi - $t) / 65536;
-         $t = $lo % 4294967296;
+         $t = MASK32[$lo];
          $hi += ($lo - $t) / 4294967296;
          $lo = $t;
       }
@@ -1008,8 +1035,8 @@ if ($use_int32) {
       # Sign of the remainder ($hi) would be the sign of $s with use integer.
       $hi = $s % $t;
       $hi -= $t if $hi and (($s > 0 and $t < 0) or ($s < 0 and $t > 0));
-      $lo = mask32(($s - $hi) / $t);
-      $hi = mask32($hi);
+      $lo = MASK32[($s - $hi) / $t];
+      $hi = MASK32[$hi];
       #printf STDERR "CALL div(0x%08x,0x%08x)=(0x%08x,0x%08x)\n", RS, RT, $lo, $hi;
    ';
    $special[27] = ' # divu RS RT;
@@ -1051,9 +1078,9 @@ if ($use_int32) {
 }
 
 $special[32] = 'die "add instruction unsupported"';
-$special[33] = "RD = mask32(RS + RT)"; # addu
+$special[33] = "RD = MASK32[RS + RT]"; # addu
 $special[34] = 'die "sub instruction unsupported"';
-$special[35] = "RD = mask32(RS - RT)"; # subu
+$special[35] = "RD = MASK32[RS - RT]"; # subu
 #$special[32] = $special[33]; # add # buggy, does not trap #d#
 #$special[34] = $special[35]; # sub # buggy, does not trap #d#
 
@@ -1070,7 +1097,7 @@ $special[43] = "RD =  RS                     <  RT                    "; # sltu
 
 my @regimm = ('die "regimm " . (($insn >> 16) & 31) . " not supported"') x 32;
 
-# !! What if $pc overflows or underflows here?
+# !! TODO(pts): What if $pc overflows or underflows here?
 $regimm[ 0] = '                    $pc += IMM - 1  if     RS & 0x80000000'; # bltz
 $regimm[16] = '($r31 = $pc << 2), ($pc += IMM - 1) if     RS & 0x80000000'; # bltzal
 $regimm[ 1] = '                    $pc += IMM - 1  unless RS & 0x80000000'; # bgez
@@ -1087,9 +1114,9 @@ $opsrc[ 5] = '($pc += IMM - 1) if RS != RT'; # bne bnez
 $opsrc[ 6] = '($pc += IMM - 1) if !RS || RS >= 0x80000000'; # blez
 $opsrc[ 7] = '($pc += IMM - 1) if  RS && RS <  0x80000000'; # bgtz
 $opsrc[ 8] = 'die "addi instruction unsupported"'; # addi
-$opsrc[ 9] = 'RT = mask32(RS + IMM)'; # addiu
-$opsrc[10] = 'RT = ((RS - ((RS & B31) * 2))) <  IMM       '; # slti
-$opsrc[11] = 'RT =   RS                      < (mask32(IMM))'; # sltiu
+$opsrc[ 9] = 'RT = MASK32[RS + IMM]'; # addiu
+$opsrc[10] = 'RT = ((RS - ((RS & B31) * 2))) <  IMM         '; # slti
+$opsrc[11] = 'RT =   RS                      < (MASK32[IMM])'; # sltiu
 $opsrc[12] = 'RT = RS & IMMU'; # andi
 $opsrc[13] = 'RT = RS | IMMU'; # ori
 $opsrc[14] = 'RT = RS ^ IMMU'; # xori
@@ -1097,58 +1124,58 @@ $opsrc[15] = 'RT = IMMU << 16'; # lui
 $opsrc[32] = ' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
-   RT = mask32(($s &  M8) - (($s &  B7) * 2));
+   $s = LOADI >> $s;
+   RT = MASK32[($s &  M8) - (($s &  B7) * 2)];
 ';
 $opsrc[33] = ' # lh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   $s = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s;
-   RT = mask32(($s & M16) - (($s & B15) * 2));
+   $s = LOADI >> $s;
+   RT = MASK32[($s & M16) - (($s & B15) * 2)];
 ';
 $opsrc[34] = ' # lwl
    $i = RS + IMM;
    $s = ($i & 3) << 3;
-   $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+   $i = LOADI;
    RT = (RT & (M32 >> (32 - $s))) | (shl($i, $s));
 ';
 $opsrc[35] = ' # lw
    $i = RS + IMM;
-   RT = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+   RT = LOADI;
 ';
 $opsrc[36] = ' # lbu
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M8;
+   RT = (LOADI >> $s) & M8;
 ';
 $opsrc[37] = ' # lhu
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   RT = (vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) >> $s) & M16;
+   RT = (LOADI >> $s) & M16;
 ';
 $opsrc[38] = ' # lwr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
-   $i = vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32);
+   $i = LOADI;
    # TODO(pts): Do the shl part with masking.
    RT = $s == 32 ? $i : shl(RT >> $s, $s) | ($i >> (32 - $s));
 ';
 $opsrc[40] = ' # sb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
-   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   $t = LOADCI;
    vec($mem[$c0], $c1, 32) = ($t & ~(M8  << $s)) | (RT & M8 ) << $s;
 ';
 $opsrc[41] = ' # sh
    $i = RS + IMM;
    $s = (~$i & 2) << 3;
-   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   $t = LOADCI;
    vec($mem[$c0], $c1, 32) = ($t & ~(M16 << $s)) | (RT & M16) << $s;
 ';
 $opsrc[42] = ' # swl
    $i = RS + IMM;
    $s = ((~$i & 3) + 1) << 3;
-   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   $t = LOADCI;
    # TODO(pts): Do the shl part with masking.
    vec($mem[$c0], $c1, 32) =
        $s == 32 ? RT : shl($t >> $s, $s) | (RT >> (32 - $s));
@@ -1161,7 +1188,7 @@ $opsrc[43] = ' # sw
 $opsrc[46] = ' # swr
    $i = RS + IMM;
    $s = (($i & 3) + 1) << 3;
-   $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
+   $t = LOADCI;
    # TODO(pts): Do the shl part with masking.
    vec($mem[$c0], $c1, 32) =
        $s == 32 ? RT : $t & (M32 >> $s) | shl(RT, 32 - $s);
@@ -1192,6 +1219,22 @@ sub get_insn($) {
       $src =~ s/\bRS\b/'$r' . (($insn >> 21) & 31)/ge;           # s register
       $src =~ s/\bRT\b/'$r' . (($insn >> 16) & 31)/ge;           # t register
       $src =~ s/\bRD\b/'$r' . (($insn >> 11) & 31)/ge;           # d register
+
+      $src =~ s/\bLOADI\b/(vec(\$mem[\$i >> ADDR_SHIFT], (\$i >> 2) & ADDR_MASK, 32)$loadi_or0)/;
+      $src =~ s/\bLOADCI\b/(vec(\$mem[\$c0 = \$i >> ADDR_SHIFT], \$c1 = (\$i >> 2) & ADDR_MASK, 32)$loadi_or0)/;
+      # This always works, but it is slow:
+      # $src =~ s/\bMASK32\[([^\]\n]+)\]/mask32($1)/g;
+      # $src =~ s/\bMASK16\[([^\]\n]+)\]/(mask32($1) & 65535)/g;
+      if ($mask_mode == 0) {
+        $src =~ s/\bMASK32\[([^\]\n]+)\]/(($1) | 0)/g;
+        $src =~ s/\bMASK16\[([^\]\n]+)\]/(($1) & 65535)/g;
+      } elsif ($mask_mode == 1) {
+        $src =~ s/\bMASK32\[([^\]\n]+)\]/(($1) % 4294967296)/g;
+        $src =~ s/\bMASK16\[([^\]\n]+)\]/(($1) % 65536)/g;
+      } else {
+        $src =~ s/\bMASK32\[([^\]\n]+)\]/(($1) & M32)/g;
+        $src =~ s/\bMASK16\[([^\]\n]+)\]/(($1) & M16)/g;
+      }
 
       $src =~ s/\$r0 = //g; # optimize away r0 assignments
       $src =~ s/\$r0\b/(0)/g; # optimise away r0 access
@@ -1249,8 +1292,8 @@ sub diff_state($$$) {
       push @d, sprintf("pg0x%x", $pgi);
       my $size = ((length($$pg0) > length($$pg1) ? length($$pg0) : length($$pg1)) + 3) >> 2;
       for (my $i = 0; $i < $size; ++$i) {
-        my $v0 = vec($$pg0, $i, 32);
-        my $v1 = vec($$pg1, $i, 32);
+        my $v0 = vec($$pg0, $i, 32) | 0;
+        my $v1 = vec($$pg1, $i, 32) | 0;
         push @d, sprintf("mem0x%08x=%08x", $pgi << 16 | $i << 2, $v1) if $v0 != $v1;
       }
     }
@@ -1261,18 +1304,29 @@ sub diff_state($$$) {
   "DIFF: $src: @d\n"
 }
 
-if (!PRIPS && !PRCPU && !PRDIFF) {
-   *::cpu_run = sub {  # Shortcut for nondebug mode.
-      while () {
-         my $insn = $delay;
-         $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
-         ++$pc;
-         die "pc overflow" if $pc > 0x3fffffff;
-         ($insn2sub{$insn} or get_insn($insn))->();
+sub cpu_run();
+if (!PRIPS && !PRCPU && !PRDIFF) {  # Hot path for non-debug mode.
+   if ($loadi_or0) {
+      *::cpu_run = sub () {  # Shortcut for nondebug mode.
+         while () {
+            my $insn = $delay;
+            $delay = vec($mem[$pc >> (ADDR2_SHIFT)], $pc & ADDR_MASK, 32) | 0;
+            die "pc overflow" if ++$pc > 0x3fffffff;
+            ($insn2sub{$insn} or get_insn($insn))->();
+         }
+      }
+   } else {
+      *::cpu_run = sub () {  # Shortcut for nondebug mode.
+         while () {
+            my $insn = $delay;
+            $delay = vec($mem[$pc >> (ADDR2_SHIFT)], $pc & ADDR_MASK, 32);
+            die "pc overflow" if ++$pc > 0x3fffffff;
+            ($insn2sub{$insn} or get_insn($insn))->();
+         }
       }
    }
 } else {
-   *::cpu_run = sub {
+   *::cpu_run = sub () {
       while () {
          if (PRIPS) {
             unless (++$::n & 0xfffff) {
@@ -1285,7 +1339,7 @@ if (!PRIPS && !PRCPU && !PRDIFF) {
 
          cpu_pr() if PRCPU;
          my $insn = $delay;
-         $delay = vec($mem[$pc >> (ADDR_SHIFT - 2)], $pc & ADDR_MASK, 32);
+         $delay = vec($mem[$pc >> (ADDR2_SHIFT)], $pc & ADDR_MASK, 32) | 0;
          ++$pc;
          die "pc overflow" if $pc > 0x3fffffff;
          if (PRDIFF) {
