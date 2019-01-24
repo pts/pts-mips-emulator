@@ -59,7 +59,9 @@ BEGIN {
 
 
 sub ADDR_SHIFT(){         16 }
+sub ADDR2_SHIFT(){        14 }
 sub ADDR_MASK (){     0x3fff }
+sub ADDR4_MASK(){     0xffff }
 
 sub STACK     (){ 0xf00f0000 }
 sub MINBRK    (){ 0x10000000 }
@@ -98,12 +100,15 @@ sub memset($$) {
    my $end = $_[0] + length($_[1]);
    die "memset too long" if $end > 4294967296;
 
-   for (my $i = $_[0]; $i < $end; ++$i) {
-      my $c = vec($_[1], $i - $_[0], 8);
-      my $s = (~$i & 3) << 3;
-      my($c0, $c1);
-      my $t = vec($mem[$c0 = $i >> ADDR_SHIFT], $c1 = ($i >> 2) & ADDR_MASK, 32);
-      vec($mem[$c0], $c1, 32) = $t & ~(0xff << $s) | ($c << $s);
+   for (my $i = $_[0]; $i < $end;) {
+      my $j = $i >= 4294901760 ? $end : ($i + 65536) & ~65535;
+      $j = $end if $j > $end;
+      my $ia = $i >> ADDR_SHIFT;
+      my $im = $i & ADDR4_MASK;
+      $mem[$ia] = "" if !defined($mem[$ia]);
+      $mem[$ia] .= "\0" x ($im - length($mem[$ia]));
+      substr($mem[$ia], $im, $j - $i) = substr($_[1], $i - $_[0], $j - $i);
+      $i = $j;
    }
 }
 
@@ -1277,16 +1282,9 @@ sub mips_exec($$;$$) {
       $size = ($size + 3) & ~3;
       while ($size > 0) {
          my $toread = $size < 65536 ? $size : 65536;
-         # TODO(pts): Read smaller chunks.
          die "read: $!" if $toread != (read($file, $data, $toread) or 0);
-         my $toread2 = $toread >> 2;
-         for (my $o = 0; $o < $toread2; ++$o) {
-            my $w = vec($data, $o, 32);
-            my $i = $vaddr + $o * 4;
-            #printf "LOAD %08x = %08x\n", $i, $w;
-            vec($mem[$i >> ADDR_SHIFT], ($i >> 2) & ADDR_MASK, 32) = $w;
-         }
-         $size -= $toread; $offset += $toread; $vaddr += $toread;
+         memset $vaddr, $data;
+         $vaddr += $toread; $size -= $toread;
       }
    }
 
