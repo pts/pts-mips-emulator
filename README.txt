@@ -59,10 +59,21 @@ missing). Some more details:
   system call numbers assigned to 32-bit and 64-bit MIPS:
   https://fedora.juszkiewicz.com.pl/syscalls.html .
 * Some precompiled busybox executables for MIPS-I: busybox-mips in:
+  * https://busybox.net/downloads/binaries/1.16.1/
+    It doesn't work. Because of some bug in pts-mips-emulator, it always
+    tries to run the setgid applet if an applet was found.
+    TODO(pts): Diagnose and fix this bug.
+  * https://busybox.net/downloads/binaries/1.17.2/
+    It doesn't work. Because of some bug in pts-mips-emulator, it always
+    tries to run the setgid applet if an applet was found.
   * https://busybox.net/downloads/binaries/1.21.1/
+    It doesn't work.
   * https://busybox.net/downloads/binaries/1.24.0.git-defconfig-multiarch/
+    It doesn't work.
   * https://busybox.net/downloads/binaries/1.26.2-defconfig-multiarch/
+    It doesn't work.
   * https://busybox.net/downloads/binaries/1.28.1-defconfig-multiarch/
+    It doesn't work.
 * These precompiled executables have architecture MIPS32r2, so they don't work
   with pts-mips-emulator:
   * https://github.com/darkerego/mips-binaries
