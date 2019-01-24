@@ -58,5 +58,13 @@ missing). Some more details:
   because it includes MIPS-II, MIPS32r2, MIPS64r2 etc. There different Linux
   system call numbers assigned to 32-bit and 64-bit MIPS:
   https://fedora.juszkiewicz.com.pl/syscalls.html .
+* Some precompiled busybox executables for MIPS-I: busybox-mips in:
+  * https://busybox.net/downloads/binaries/1.21.1/
+  * https://busybox.net/downloads/binaries/1.24.0.git-defconfig-multiarch/
+  * https://busybox.net/downloads/binaries/1.26.2-defconfig-multiarch/
+  * https://busybox.net/downloads/binaries/1.28.1-defconfig-multiarch/
+* These precompiled executables have architecture MIPS32r2, so they don't work
+  with pts-mips-emulator:
+  * https://github.com/darkerego/mips-binaries
 
 __END__
