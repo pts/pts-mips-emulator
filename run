@@ -262,6 +262,7 @@ sub cpu_pr() {
 # syscalls
 
 # mips abi
+sub EPERM  (){ 1 }
 sub ENOENT (){  2 }
 sub EBADF  (){  9 }
 sub ENOMEM (){ 12 }
@@ -651,6 +652,7 @@ $syscall[4045] = sub { # brk
    $brk
 }; # brk
 
+$syscall[4046] = sub { strace "setgid ()" ; -(EPERM) };
 $syscall[4047] = sub { strace "getgid ()" ; $( };
 
 $syscall[4049] = sub { strace "geteuid ()"; $> };
