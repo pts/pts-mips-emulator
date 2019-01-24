@@ -9,9 +9,25 @@ sub PRDIFF (){ 0 }
 sub DETSYS (){ 0 }  # Make some system calls deterministic.
 
 use strict;
-use warnings;
-# Most of $mem[$i] is undef by design, a 0 value is assumed.
-no warnings qw(uninitialized);
+
+BEGIN {
+   eval { require warnings };  # Perl 5.004_04 doesn't have it.
+   import warnings;
+   if (defined(&warnings::import)) {
+      import warnings;
+      # Most of $mem[$i] is undef by design, a 0 value is assumed.
+      #
+      # Perl still reports a warning if we read vec($mem[$page_idx], ..., 32)
+      # if the page is undef. We don't want to see those warnings.
+      #
+      # Perl 5.6.0 and later report fewer uninitialized warnings than Perl
+      # 5.004_04, but it's still not completely silent.
+      unimport warnings qw(uninitialized);
+   }
+   # We could do `BEGIN { $^W = 0 }' in Perl 5.004_04, but there is no fast way
+   # to selectively disable the /^Use of uninitialized value at / warnings.
+}
+
 #use features qw(...);  # None needed.
 no utf8;
 
