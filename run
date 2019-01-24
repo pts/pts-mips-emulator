@@ -1388,18 +1388,25 @@ sub mips_exec($$;$$) {
    }
 
    # 32 bit, msb, elf version
-   "\x7fELF\x01\x02\x01" eq substr $elf_header, 0, 7
-      or die "not an elf file, or wrong class, encoding or version";
-
-   my ($type, $machine, $unused_version, $entry, $phoff, $unused_shoff,
-       $unused_flags, $unused_ehsize, $phentsize, $phnum,
-      ) = unpack "x16nnNNNNNnnn", $elf_header;
-
-   $type == 2
-      or die "file not an executable";
-
-   $machine == 8
-      or die "file not mips r3000 big endian";
+   my ($magic, $class, $endianness, $ident_version, $osabi, $abiversion, $pad,
+       $type, $machine, $elf_version, $entry, $phoff, $unused_shoff,
+       $flags, $unused_ehsize, $phentsize, $phnum,
+      ) = unpack("a4CCCCCa7nnNNNNNnnn", $elf_header);
+   die "ELF expected: $ARGV[0]\n" if $magic ne "\x7fELF";
+   die "32-bit ELF expected: $ARGV[0]\n" if $class != 1;
+   die "bind endian (MSB-first) ELF expected: $ARGV[0]\n" if $endianness != 2;
+   die "ELF ident version 1 expected: $ARGV[0]\n" if $ident_version != 1;
+   die "Linux ELF expected: $ARGV[0]\n" if $osabi != 0 and $osabi != 3;
+   die "ELF ABI version 0 expected: $ARGV[0]\n" if $abiversion != 0;
+   die "ELF executable expected: $ARGV[0]\n" if $type != 2;
+   die "MIPS expected: $ARGV[0]\n" if $machine != 8;
+   die "ELF version 1 expected: $ARGV[0]\n" if $elf_version != 1;
+   my $subarch = ($flags >> 28) & 15;
+   my @subarchs = qw(MIPS-I MIPS-II MIPS-III MIPS-IV MIPS-V MIPS32r1 MIPS64r1
+                     MIPS32r2 MIPS64r2 MIPS32r6 MIPS64r6 11 12 13 14 15);
+   # TODO(pts): What is the difference between MIPS-I, MIPS32r2 and MIPS R3000?
+   die "MIPS subarchitecture $subarchs[$subarch] not supported: $ARGV[0]\n" if
+       $subarch; 
 
    die "seek: $!" if !seek($file, $phoff + $base_ofs, 0);
    my $phents;
