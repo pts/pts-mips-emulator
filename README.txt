@@ -13,6 +13,7 @@ more memory.)
 
 pts-mips-emulator has been tested and found working with:
 
+* Perl 5.004_04 (i386, 32-bit integers, 1997-10-15)
 * Perl 5.6.1 (i386, 32-bit integers, 2001-04-08)
 * Perl 5.10.1 (i386, 32-bit integers, 2009-08-22)
 * Perl 5.14.2 (i386, 64-bit integers, 2011-09-26)
