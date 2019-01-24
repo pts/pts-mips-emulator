@@ -757,7 +757,7 @@ $syscall[4108] = sub { # newfstat
 
 $syscall[4114] = sub { # wait4
    my ($pid, $statusbuf, $options, $rusage) = @_;
-   $pid = unpack "l", pack "L", $pid;
+   $pid = unpack "l", pack "L", $pid;  # !! More consistent sign conversion.
    strace "wait4 (%d, %x, %x, %x)", $pid, $statusbuf, $options, $rusage;
 
    memset $rusage, "\x00" x 72
@@ -866,13 +866,14 @@ $syscall[4219] = sub { # getdents64
    my $ino = -1;
    my $type = 0;
 
-   my $entry = pack "NN NN n C Z*",
+   my $entry = pack "NN NN n C a*",
       ($use_int32 ? int($ino / 4294967296) : $ino >> 32), $ino,
       0, 0, # offset
       (length $name) + 20,
       $type,
       $name;
 
+   $entry .= "\0";
    memset $dirp, $entry;
    length $entry
 };
@@ -1334,7 +1335,9 @@ sub mips_exec($$;$$) {
    "\x7fELF\x01\x02\x01" eq substr $elf_header, 0, 7
       or die "not an elf file, or wrong class, encoding or version";
 
-   my ($type, $machine, undef, $entry, $phoff, undef, undef,  undef, $phentsize, $phnum) = unpack "x16nnNNNNNnnn", $elf_header;
+   my ($type, $machine, $unused_version, $entry, $phoff, $unused_shoff,
+       $unused_flags, $unused_ehsize, $phentsize, $phnum,
+      ) = unpack "x16nnNNNNNnnn", $elf_header;
 
    $type == 2
       or die "file not an executable";
