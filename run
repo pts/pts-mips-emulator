@@ -29,7 +29,11 @@ BEGIN {
 }
 
 #use features qw(...);  # None needed.
-no utf8;
+
+BEGIN {  # Perl 5.004_04 doesn't have `no utf8;', so we do it leniently.
+   eval { require utf8 };
+   unimport utf8 if defined(&utf8::unimport);
+}
 
 # genfh is a helper function for filehandle symbol generation.
 #sub genfh;  # No prototype, can't predict prototype of \&Symbol::gensym.
