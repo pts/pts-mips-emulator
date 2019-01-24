@@ -518,8 +518,10 @@ $syscall[4006] = sub { # close
    strace "close ($fd)";
    fd_valid $fd or return -(EBADF);
 
-   undef $dh[$fd];#d#
-   (close delete $fh[$fd])
+   undef $dh[$fd];#d#  TODO(pts): Does it call closedir, or should we?
+   my $fhd = $fh[$fd];
+   $fh[$fd] = undef;
+   (close $fhd)
       ? 0 : -errno2mips($! + 0)
 };
 
