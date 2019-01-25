@@ -1152,8 +1152,6 @@ $opsrc[13] = 'RT = RS | IMMU'; # ori
 $opsrc[14] = 'RT = RS ^ IMMU'; # xori
 $opsrc[15] = '#lui
     RT = IMMU << 16'; # lui
-# $opsrc[17] would contain FPU (floating point) instructions, see
-# https://en.wikipedia.org/wiki/MIPS_architecture#FPU_instructions .
 $opsrc[32] = ' # lb
    $i = RS + IMM;
    $s = (~$i & 3) << 3;
@@ -1226,6 +1224,19 @@ $opsrc[46] = ' # swr
    vec($mem[$c0], $c1, 32) =
        $s == 32 ? RT : $t & (M32 >> $s) | shl(RT, 32 - $s);
 ';
+
+# https://ti.tuwien.ac.at/cps/teaching/courses/cavo/files/MIPS32-IS.pdf
+$opsrc[17] = 'die "floating point opcode 17 not supported"';
+$opsrc[49] = '#lwc1
+die "floating point lwc1 not supported"';
+$opsrc[50] = '#lwc2
+die "floating point lwc2 not supported"';
+# We support swc1 and swc2 by ignoring them. This should work as long as
+# lwc1, lwc2 and opther floating point instructions (e.g. opcode 17) are not
+# called.
+$opsrc[57] = '#swc1';
+$opsrc[58] = '#swc2';
+
 # TODO(pts): eval each opcode once with some default registers, just to check
 # for syntax errors.
 
