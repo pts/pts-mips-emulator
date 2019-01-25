@@ -602,8 +602,6 @@ $syscall[4020] = sub {
 };
 $syscall[4020] = sub { strace "getpid ()"; $$ };
 
-$syscall[4024] = sub { strace "getuid ()"; $< };
-
 $syscall[4033] = sub { # access
    my ($path, $mode) = @_;
    $path = memstr $path;
@@ -652,8 +650,11 @@ $syscall[4045] = sub { # brk
    $brk
 }; # brk
 
-$syscall[4046] = sub { strace "setgid ()" ; -(EPERM) };
-$syscall[4047] = sub { strace "getgid ()" ; $( };
+$syscall[4047] = sub { strace "getgid ()"; $( };
+$syscall[4046] = sub { strace "setgid ()"; $( == $_[0] ? 0 : -(EPERM) };
+
+$syscall[4024] = sub { strace "getuid ()"; $< };
+$syscall[4023] = sub { strace "setuid ()"; $< == $_[0] ? 0 : -(EPERM) };
 
 $syscall[4049] = sub { strace "geteuid ()"; $> };
 $syscall[4050] = sub { strace "getegid ()"; $) };
