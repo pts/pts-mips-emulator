@@ -1272,7 +1272,7 @@ sub get_insn($) {
       $src =~ s/\$r0 = //g; # optimize away r0 assignments
       $src =~ s/\$r0\b/(0)/g; # optimise away r0 access
 
-      my $cb = eval "sub { $src }" || die "$insn<$src>: $@";
+      my $cb = eval "sub { $src\n}" || die "$insn<$src>: $@";
       if (PRCPU or PRDIFF) { $src =~ s/\s+/ /g; $insn2src{$insn} = $src }
       $cb
    }
