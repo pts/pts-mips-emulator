@@ -1296,8 +1296,8 @@ sub get_state() {
     $r24, $r25, $r26, $r27, $r28, $r29, $r30, $r31)
 }
 
-sub diff_state($$$) {
-  my($st0, $st1, $insn) = @_;
+sub diff_state($$$$) {
+  my($st0, $st1, $insn, $pc_insn) = @_;
   my @d;
   if ($st0->[1] != $st1->[1]) { push @d, sprintf("pc=0x%08x", $st1->[1] >> 2) }
   if ($st0->[2] != $st1->[2]) { push @d, sprintf("hi=0x%08x", $st1->[2]) }
@@ -1325,8 +1325,13 @@ sub diff_state($$$) {
   }
   push @d, 'none' if !@d;
   my $src = $insn2src{$insn};
+  $src =~ s@\A\s+@@;
+  $src =~ s@\A#\s+@#@;
   $src =~ s@\A(# *(?:mult|multu|div|divu) [^;]*;).*@$1@s;
-  "DIFF: $src: @d\n"
+  my $pch = sprintf("%08x", $pc_insn << 2);
+  my $ih = sprintf("%08x", $insn);
+  #die sprintf("INIT sp=0x%x", $st0->[5 + 29]);
+  "DIFF: pci=0x$pch insn=0x$ih: $src ;;; @d\n"
 }
 
 sub cpu_run();
@@ -1352,6 +1357,7 @@ if (!PRIPS && !PRCPU && !PRDIFF) {  # Hot path for non-debug mode.
    }
 } else {
    *::cpu_run = sub () {
+      my $pc_delay;
       while () {
          if (PRIPS) {
             unless (++$::n & 0xfffff) {
@@ -1363,7 +1369,9 @@ if (!PRIPS && !PRCPU && !PRDIFF) {  # Hot path for non-debug mode.
          }
 
          cpu_pr() if PRCPU;
+         my $pc_insn = $pc_delay;
          my $insn = $delay;
+         $pc_delay = $pc;
          $delay = vec($mem[$pc >> (ADDR2_SHIFT)], $pc & ADDR_MASK, 32) | 0;
          ++$pc;
          die "pc overflow" if $pc > 0x3fffffff;
@@ -1371,7 +1379,7 @@ if (!PRIPS && !PRCPU && !PRDIFF) {  # Hot path for non-debug mode.
            my @st0 = get_state();
            ($insn2sub{$insn} or get_insn($insn))->();
            my @st1 = get_state();
-           print STDERR diff_state(\@st0, \@st1, $insn);
+           print STDERR diff_state(\@st0, \@st1, $insn, $pc_insn);
          } else {
            ($insn2sub{$insn} or get_insn($insn))->();
          }
