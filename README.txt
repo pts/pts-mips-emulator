@@ -78,4 +78,36 @@ missing). Some more details:
   with pts-mips-emulator:
   * https://github.com/darkerego/mips-binaries
 
+About emulation speed. For LZMA2 decompression, qemu-mips on amd64 is about
+2.93 times slower than native amd64, and pts-mips-emulator is about 2755
+times slower than native amd64. User time was compared. Detailed speed
+measurements:
+
+  $ wget -O busybox17 https://busybox.net/downloads/binaries/1.17.2/busybox-mips
+  $ chmod +x busybox17  # Needed by qemu-mips.
+
+  # pdftex.doc.tar.xz compressed_size=2404924 uncompressed_size=4218880
+  $ time xzcat <pdftex.doc.tar.xz >tdx.tar
+  0.15s user 0.01s system 99% cpu 0.157 total
+  $ time qemu-mips busybox17 xz -cd <pdftex.doc.tar.xz >tdq.tar
+  0.44s user 0.00s system 99% cpu 0.449 total
+  $ cmp tdx.tar tdq.tar
+  (empty, files are identical)
+  $ time perl ./run busybox17 xz -cd <pdftex.doc.tar.xz >tdp.tar
+  413.22s user 0.06s system 99% cpu 6:53.33 total
+  $ cmp tdx.tar tdp.tar
+  (empty, files are identical)
+
+  # pdftex.i386-linux.tar.xz compressed_size=499796 decompressed_size=1372160
+  $ time xzcat <pdftex.i386-linux.tar.xz >tix.tar
+  0.03s user 0.00s system 96% cpu 0.039 total
+  $ time qemu-mips busybox17 xz -cd <pdftex.i386-linux.tar.xz >tiq.tar
+  0.12s user 0.00s system 99% cpu 0.121 total
+  $ cmp tix.tar tiq.tar
+  (empty, files are identical)
+  $ time perl ./run busybox17 xz -cd <pdftex.i386-linux.tar.xz >tip.tar
+  101.05s user 0.02s system 99% cpu 1:41.08 total
+  $ cmp tix.tar tip.tar
+  (empty, files are identical)
+
 __END__
