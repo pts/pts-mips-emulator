@@ -758,7 +758,7 @@ $syscall[4090] = sub {
    #         unsigned long, prot, unsigned long, flags, unsigned long,
    #         fd, off_t, offset)
 
-   strace "mips_mmap (%x, %d, %x, %x, %d, %d)", @_;
+   strace "mips_mmap (%x, %d, %x, %x, %d, %d)", @_[0..5];
    -(ENOSYS)
 };
 
