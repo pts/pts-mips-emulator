@@ -1127,11 +1127,11 @@ my @regimm = ('die "regimm " . (($insn >> 16) & 31) . " not supported"') x 32;
 $regimm[ 0] = '#bltz
    $pc += IMM - 1  if     RS & 0x80000000'; # bltz
 $regimm[16] = '#bltzal
-   ($r31 = $pc << 2), ($pc += IMM - 1) if     RS & 0x80000000'; # bltzal
+   $r31 = $pc << 2; $pc += IMM - 1 if     RS & 0x80000000'; # bltzal
 $regimm[ 1] = '#bgez
    $pc += IMM - 1  unless RS & 0x80000000'; # bgez
 $regimm[17] = '#bal
-   ($r31 = $pc << 2), ($pc += IMM - 1) unless RS & 0x80000000'; # bgezal bal
+   $r31 = $pc << 2; $pc += IMM - 1 unless RS & 0x80000000'; # bgezal bal
 
 ############################################
 # others
