@@ -1,11 +1,12 @@
 pts-mips-emulator: MIPS I emulator in Perl 5 which can run Linux programs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 pts-mips-emulator is a platform-independent, proof-of-concept Perl 5 script
-which can run Linux MIPS (MIPS R3000) ELF executables.
+which can run some Linux MIPS-I (R2000, R3000) ELF executables.
 
 The code is a fork of the excellent
 http://blog.schmorp.de/2015-07-04-emulating-linux-mips-in-perl-4.html . This
-fork contains some bugfixes and usability improvements.
+fork contains some bugfixes, usability improvements and memory utilization
+improvements.
 
 pts-mips-emulator is compatible with Perl 5 installations with both 32-bit
 and 64-bit integer arithmetic. (It's faster on 64-bit, but it doesn't use
@@ -60,12 +61,9 @@ missing). Some more details:
   https://fedora.juszkiewicz.com.pl/syscalls.html .
 * Some precompiled busybox executables for MIPS-I: busybox-mips in:
   * https://busybox.net/downloads/binaries/1.16.1/
-    It doesn't work. Because of some bug in pts-mips-emulator, it always
-    tries to run the setgid applet if an applet was found.
-    TODO(pts): Diagnose and fix this bug.
+    Works, but some applets need floating point, which aborts the emulator.
   * https://busybox.net/downloads/binaries/1.17.2/
-    It doesn't work. Because of some bug in pts-mips-emulator, it always
-    tries to run the setgid applet if an applet was found.
+    Works, but some applets need floating point, which aborts the emulator.
   * https://busybox.net/downloads/binaries/1.21.1/
     It doesn't work.
   * https://busybox.net/downloads/binaries/1.24.0.git-defconfig-multiarch/
@@ -109,5 +107,11 @@ measurements:
   101.05s user 0.02s system 99% cpu 1:41.08 total
   $ cmp tix.tar tip.tar
   (empty, files are identical)
+
+If you plan to use pts-mips-emulator for LZMA2 decompression (.xz, .lzma,
+xzcat, xzdec, unlzma, lzmadec), then please take a look at muxzcat.pl (on
+https://github.com/pts/muxzcat) instead, which is about 9.67 times faster
+than pts-mips-emulator for this use case, and it runs on the same systems
+(Perl >= 5.004_04, either 64-bit or 32-bit).
 
 __END__
